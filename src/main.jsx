@@ -42,6 +42,128 @@ function parseEmailHeaderBlock(messageText) {
   return headers;
 }
 
+
+function extractUrlsFromText(value) {
+  return Array.from(new Set(String(value || '').match(/https?:\/\/[^\s"'<>]+/gi) || []))
+    .map((url) => url.replace(/[)\].,]+$/g, ''));
+}
+
+function extractEtsyLinksFromText(value) {
+  return extractUrlsFromText(value).filter((url) => /etsy\.com/i.test(url));
+}
+
+function getPrimaryEtsyLink(value) {
+  const links = extractEtsyLinksFromText(value);
+  return links.find((url) => /(order|orders|sold|transaction|receipt|buyer|conversation)/i.test(url)) || links[0] || '';
+}
+
+function isSystemOrSellerEmail(email) {
+  const e = String(email || '').toLowerCase().trim();
+
+  if (!e) return true;
+  if (e.endsWith('@etsy.com')) return true;
+  if (e.includes('no-reply')) return true;
+  if (e.includes('noreply')) return true;
+  if (e.includes('donotreply')) return true;
+  if (e === 'seller@example.com') return true;
+
+  return false;
+}
+
+function getMessageBody(messageText) {
+  const normalized = String(messageText || '').replace(/\r\n/g, '\n');
+  const parts = normalized.split(/\n\n/);
+  return parts.slice(1).join('\n\n');
+}
+
+function extractBuyerEmailsFromMessage(messageText) {
+  const fullText = String(messageText || '');
+  const body = getMessageBody(fullText);
+  const headers = parseEmailHeaderBlock(fullText);
+
+  const buyerLines = body
+    .split(/\r?\n/)
+    .filter((line) => /(buyer|customer|contact|email|reply|message)/i.test(line));
+
+  const labeledEmails = uniqueEmailsFromText(buyerLines.join('\n'))
+    .filter((email) => !isSystemOrSellerEmail(email));
+
+  if (labeledEmails.length) {
+    return Array.from(new Set(labeledEmails));
+  }
+
+  const headerEmails = uniqueEmailsFromText([
+    headers.from || '',
+    headers.to || '',
+    headers.cc || '',
+    headers.bcc || ''
+  ].join(' '));
+
+  const allBodyEmails = uniqueEmailsFromText(body)
+    .filter((email) => !isSystemOrSellerEmail(email))
+    .filter((email) => !headerEmails.includes(email));
+
+  return Array.from(new Set(allBodyEmails));
+}
+
+function inferBuyerNameFromMessage(messageText, email) {
+  const body = getMessageBody(messageText);
+  const lines = body.split(/\r?\n/);
+
+  for (const line of lines) {
+    const match = line.match(/(?:buyer|customer|name|contact buyer)\s*:?\s*([^<\n]+)/i);
+    if (match && match[1]) {
+      const cleaned = cleanDisplayName(match[1])
+        .replace(email || '', '')
+        .replace(/contact buyer/i, '')
+        .trim();
+
+      if (cleaned && !cleaned.includes('@') && cleaned.length <= 80) {
+        return cleaned;
+      }
+    }
+  }
+
+  if (email) {
+    return email.split('@')[0].replace(/[._-]+/g, ' ');
+  }
+
+  return 'Email missing — review Etsy link';
+}
+
+function inferEtsyOrderId(messageText, fallbackIndex) {
+  const value = String(messageText || '');
+
+  const urlOrderMatch = value.match(/[?&](?:order_id|receipt_id|transaction_id)=(\d+)/i);
+  if (urlOrderMatch) return urlOrderMatch[1];
+
+  const orderMatch = value.match(/(?:order|order_id|receipt|transaction)[^\d]{0,12}(\d{4,})/i);
+  if (orderMatch) return orderMatch[1];
+
+  return `etsy-message-${fallbackIndex}`;
+}
+
+function buildEtsyRecoveryRow({ email, messageIndex, headers, message, fileName }) {
+  const etsyLink = getPrimaryEtsyLink(message);
+  const buyerName = inferBuyerNameFromMessage(message, email);
+  const hasBuyerEmail = Boolean(email);
+
+  return {
+    'Customer Name': buyerName,
+    'Customer Email': email || '',
+    'Order ID': inferEtsyOrderId(message, messageIndex),
+    'Order Date': headers.date || '',
+    'Order Total': '0',
+    'Marketing Consent': 'Unknown',
+    'Source Type': 'Etsy Gmail Takeout',
+    'Subject': headers.subject || '',
+    'Raw Source File': fileName,
+    'Etsy Link': etsyLink,
+    'Etsy Recovery Status': hasBuyerEmail ? 'Email Found' : 'Link Review Needed',
+    'Review Status': hasBuyerEmail ? 'Email Found' : 'Link Review Needed'
+  };
+}
+
 function mboxToRows(text, fileName = 'Gmail Takeout.mbox') {
   const raw = String(text || '');
 
@@ -55,36 +177,33 @@ function mboxToRows(text, fileName = 'Gmail Takeout.mbox') {
   for (const message of messages) {
     messageCount += 1;
     const headers = parseEmailHeaderBlock(message);
-
-    const from = headers.from || '';
-    const to = headers.to || '';
-    const cc = headers.cc || '';
-    const bcc = headers.bcc || '';
-    const date = headers.date || '';
     const subject = headers.subject || '';
+    const isEtsySale = /etsy/i.test(message) && /(transaction|sale|sold|order|receipt|buyer)/i.test(`${message} ${subject}`);
 
-    const participants = [
-      ...uniqueEmailsFromText(from),
-      ...uniqueEmailsFromText(to),
-      ...uniqueEmailsFromText(cc),
-      ...uniqueEmailsFromText(bcc)
-    ];
+    if (!isEtsySale) {
+      continue;
+    }
 
-    const uniqueParticipants = Array.from(new Set(participants));
+    const buyerEmails = extractBuyerEmailsFromMessage(message);
 
-    for (const email of uniqueParticipants) {
-      const likelyNameSource = [from, to, cc, bcc].find((value) => String(value || '').toLowerCase().includes(email)) || '';
-      rows.push({
-        'Customer Name': cleanDisplayName(likelyNameSource) || 'Name missing',
-        'Customer Email': email,
-        'Order ID': `gmail-message-${messageCount}`,
-        'Order Date': date,
-        'Order Total': '0',
-        'Marketing Consent': 'Unknown',
-        'Source Type': 'Gmail Takeout MBOX',
-        'Subject': subject,
-        'Raw Source File': fileName
-      });
+    if (buyerEmails.length) {
+      for (const email of buyerEmails) {
+        rows.push(buildEtsyRecoveryRow({
+          email,
+          messageIndex: messageCount,
+          headers,
+          message,
+          fileName
+        }));
+      }
+    } else {
+      rows.push(buildEtsyRecoveryRow({
+        email: '',
+        messageIndex: messageCount,
+        headers,
+        message,
+        fileName
+      }));
     }
   }
 
@@ -92,37 +211,34 @@ function mboxToRows(text, fileName = 'Gmail Takeout.mbox') {
 }
 
 function emlToRows(text, fileName = 'Imported Email.eml') {
-  const headers = parseEmailHeaderBlock(text);
-
-  const from = headers.from || '';
-  const to = headers.to || '';
-  const cc = headers.cc || '';
-  const bcc = headers.bcc || '';
-  const date = headers.date || '';
+  const message = String(text || '');
+  const headers = parseEmailHeaderBlock(message);
   const subject = headers.subject || '';
+  const isEtsySale = /etsy/i.test(message) && /(transaction|sale|sold|order|receipt|buyer)/i.test(`${message} ${subject}`);
 
-  const participants = Array.from(new Set([
-    ...uniqueEmailsFromText(from),
-    ...uniqueEmailsFromText(to),
-    ...uniqueEmailsFromText(cc),
-    ...uniqueEmailsFromText(bcc)
-  ]));
+  if (!isEtsySale) {
+    return [];
+  }
 
-  return participants.map((email, index) => {
-    const likelyNameSource = [from, to, cc, bcc].find((value) => String(value || '').toLowerCase().includes(email)) || '';
+  const buyerEmails = extractBuyerEmailsFromMessage(message);
 
-    return {
-      'Customer Name': cleanDisplayName(likelyNameSource) || 'Name missing',
-      'Customer Email': email,
-      'Order ID': `email-message-${index + 1}`,
-      'Order Date': date,
-      'Order Total': '0',
-      'Marketing Consent': 'Unknown',
-      'Source Type': 'Email File',
-      'Subject': subject,
-      'Raw Source File': fileName
-    };
-  });
+  if (buyerEmails.length) {
+    return buyerEmails.map((email, index) => buildEtsyRecoveryRow({
+      email,
+      messageIndex: index + 1,
+      headers,
+      message,
+      fileName
+    }));
+  }
+
+  return [buildEtsyRecoveryRow({
+    email: '',
+    messageIndex: 1,
+    headers,
+    message,
+    fileName
+  })];
 }
 
 const FIELD_ALIASES = {
