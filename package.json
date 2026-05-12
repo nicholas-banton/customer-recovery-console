@@ -12,8 +12,8 @@
     "start": "electron .",
     "dist": "npm run build && electron-builder",
     "check": "node --check electron/main.cjs && node --check electron/preload.cjs",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64 --publish never",
     "dist:mac:x64": "npm run build && electron-builder --mac dmg zip --x64",
     "dist:mac:arm64": "npm run build && electron-builder --mac dmg zip --arm64",
     "dist:all-local": "npm run build && electron-builder -mw"
@@ -36,7 +36,7 @@
   "build": {
     "appId": "com.customerrecovery.console",
     "productName": "Customer Recovery Console",
-    "copyright": "Copyright \u00a9 2026 Customer Recovery Console",
+    "copyright": "Copyright © 2026 Customer Recovery Console",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "directories": {
@@ -106,5 +106,6 @@
       "shortcutName": "Customer Recovery Console",
       "uninstallDisplayName": "Customer Recovery Console"
     }
-  }
+  },
+  "author": "Nicholas Banton"
 }
