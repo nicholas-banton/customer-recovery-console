@@ -1,0 +1,110 @@
+{
+  "name": "customer-recovery-console",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local customer recovery, cleanup, consent review, and export console for authorized marketplace/customer data files.",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "web:dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs",
+    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --x64 --arm64",
+    "dist:mac:x64": "npm run build && electron-builder --mac dmg zip --x64",
+    "dist:mac:arm64": "npm run build && electron-builder --mac dmg zip --arm64",
+    "dist:all-local": "npm run build && electron-builder -mw"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "papaparse": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "xlsx": "latest"
+  },
+  "devDependencies": {
+    "concurrently": "latest",
+    "cross-env": "latest",
+    "electron": "latest",
+    "electron-builder": "latest",
+    "vite": "latest",
+    "wait-on": "latest"
+  },
+  "build": {
+    "appId": "com.customerrecovery.console",
+    "productName": "Customer Recovery Console",
+    "copyright": "Copyright \u00a9 2026 Customer Recovery Console",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "README.md",
+      "COMPLIANCE_NOTES.md"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "title": "Customer Recovery Console ${version}",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Customer Recovery Console",
+      "uninstallDisplayName": "Customer Recovery Console"
+    }
+  }
+}
