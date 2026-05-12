@@ -6,6 +6,125 @@ import './styles.css';
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 
+function uniqueEmailsFromText(value) {
+  return Array.from(new Set(String(value || '').match(EMAIL_RE) || []))
+    .map((email) => email.toLowerCase());
+}
+
+function cleanDisplayName(value) {
+  return String(value || '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/["']/g, '')
+    .trim();
+}
+
+function parseEmailHeaderBlock(messageText) {
+  const normalized = String(messageText || '').replace(/\r\n/g, '\n');
+  const headerText = normalized.split('\n\n')[0] || '';
+  const lines = headerText.split('\n');
+
+  const headers = {};
+  let currentKey = '';
+
+  for (const line of lines) {
+    if (/^\s/.test(line) && currentKey) {
+      headers[currentKey] += ' ' + line.trim();
+      continue;
+    }
+
+    const match = line.match(/^([^:]+):\s*(.*)$/);
+    if (match) {
+      currentKey = match[1].toLowerCase();
+      headers[currentKey] = match[2].trim();
+    }
+  }
+
+  return headers;
+}
+
+function mboxToRows(text, fileName = 'Gmail Takeout.mbox') {
+  const raw = String(text || '');
+
+  const messages = raw
+    .split(/\n(?=From [^\n]+\n)/g)
+    .filter((part) => part.trim().length > 0);
+
+  const rows = [];
+  let messageCount = 0;
+
+  for (const message of messages) {
+    messageCount += 1;
+    const headers = parseEmailHeaderBlock(message);
+
+    const from = headers.from || '';
+    const to = headers.to || '';
+    const cc = headers.cc || '';
+    const bcc = headers.bcc || '';
+    const date = headers.date || '';
+    const subject = headers.subject || '';
+
+    const participants = [
+      ...uniqueEmailsFromText(from),
+      ...uniqueEmailsFromText(to),
+      ...uniqueEmailsFromText(cc),
+      ...uniqueEmailsFromText(bcc)
+    ];
+
+    const uniqueParticipants = Array.from(new Set(participants));
+
+    for (const email of uniqueParticipants) {
+      const likelyNameSource = [from, to, cc, bcc].find((value) => String(value || '').toLowerCase().includes(email)) || '';
+      rows.push({
+        'Customer Name': cleanDisplayName(likelyNameSource) || 'Name missing',
+        'Customer Email': email,
+        'Order ID': `gmail-message-${messageCount}`,
+        'Order Date': date,
+        'Order Total': '0',
+        'Marketing Consent': 'Unknown',
+        'Source Type': 'Gmail Takeout MBOX',
+        'Subject': subject,
+        'Raw Source File': fileName
+      });
+    }
+  }
+
+  return rows;
+}
+
+function emlToRows(text, fileName = 'Imported Email.eml') {
+  const headers = parseEmailHeaderBlock(text);
+
+  const from = headers.from || '';
+  const to = headers.to || '';
+  const cc = headers.cc || '';
+  const bcc = headers.bcc || '';
+  const date = headers.date || '';
+  const subject = headers.subject || '';
+
+  const participants = Array.from(new Set([
+    ...uniqueEmailsFromText(from),
+    ...uniqueEmailsFromText(to),
+    ...uniqueEmailsFromText(cc),
+    ...uniqueEmailsFromText(bcc)
+  ]));
+
+  return participants.map((email, index) => {
+    const likelyNameSource = [from, to, cc, bcc].find((value) => String(value || '').toLowerCase().includes(email)) || '';
+
+    return {
+      'Customer Name': cleanDisplayName(likelyNameSource) || 'Name missing',
+      'Customer Email': email,
+      'Order ID': `email-message-${index + 1}`,
+      'Order Date': date,
+      'Order Total': '0',
+      'Marketing Consent': 'Unknown',
+      'Source Type': 'Email File',
+      'Subject': subject,
+      'Raw Source File': fileName
+    };
+  });
+}
+
 const FIELD_ALIASES = {
   email: ['email', 'e-mail', 'buyer email', 'customer email', 'ship email', 'contact email'],
   name: ['name', 'buyer', 'buyer name', 'customer', 'customer name', 'ship name', 'recipient'],
@@ -306,6 +425,16 @@ function App() {
       });
     }
 
+    if (lower.endsWith('.mbox')) {
+      const text = await file.text();
+      return mboxToRows(text, file.name);
+    }
+
+    if (lower.endsWith('.eml')) {
+      const text = await file.text();
+      return emlToRows(text, file.name);
+    }
+
     if (lower.endsWith('.xlsx') || lower.endsWith('.xls')) {
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: 'array' });
@@ -313,7 +442,7 @@ function App() {
       return XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], { defval: '' });
     }
 
-    throw new Error('Unsupported file type. Use CSV, TXT, XLS, or XLSX for this MVP.');
+    throw new Error('Unsupported file type. Use CSV, TXT, XLS, XLSX, MBOX, or EML for this MVP.');
   }
 
   async function handleFiles(files) {
@@ -446,10 +575,10 @@ function App() {
                 handleFiles(event.dataTransfer.files);
               }}
             >
-              <input type="file" multiple accept=".csv,.txt,.xlsx,.xls" onChange={(event) => handleFiles(event.target.files)} />
+              <input type="file" multiple accept=".csv,.txt,.xlsx,.xls,.mbox,.eml" onChange={(event) => handleFiles(event.target.files)} />
               <span className="upload-icon">⇪</span>
               <strong>Drop files here or tap to choose</strong>
-              <small>Supported in v0.1: CSV, TXT, XLS, XLSX</small>
+              <small>Supported: CSV, TXT, XLS, XLSX, MBOX, EML</small>
             </label>
 
             <div className="help-grid">
@@ -463,7 +592,7 @@ function App() {
               </article>
               <article>
                 <strong>Coming later</strong>
-                <p>MBOX/EML mailbox parsing, SQLite project storage, and packaged Mac/Windows installers.</p>
+                <p>Now supports first-pass Gmail Takeout MBOX and EML import. SQLite project storage and PDF reports are planned next.</p>
               </article>
             </div>
           </section>
