@@ -131,7 +131,12 @@ const FIELD_ALIASES = {
   orderId: ['order id', 'order', 'order number', 'receipt id', 'transaction id', 'sale id'],
   amount: ['amount', 'total', 'order total', 'price', 'gross', 'net', 'revenue'],
   date: ['date', 'order date', 'sale date', 'created', 'created at', 'purchase date'],
-  consent: ['consent', 'marketing consent', 'opt in', 'opt-in', 'subscribed', 'newsletter']
+  consent: ['consent', 'marketing consent', 'opt in', 'opt-in', 'subscribed', 'newsletter'],
+  sourceType: ['source type', 'source', 'import type'],
+  subject: ['subject', 'email subject'],
+  etsyLinks: ['etsy links', 'etsy link', 'transaction links', 'buyer links', 'review links'],
+  linkReviewStatus: ['link review status', 'review status'],
+  rawSourceFile: ['raw source file', 'source file']
 };
 
 const SAMPLE_ROWS = [
@@ -217,6 +222,13 @@ function buildCustomers(rows, fileName = 'Imported File') {
     const amount = toNumber(findField(row, 'amount'));
     const date = String(findField(row, 'date') || '').trim();
     const consent = normalizeConsent(findField(row, 'consent'));
+    const sourceType = String(findField(row, 'sourceType') || 'Imported File').trim();
+    const subject = String(findField(row, 'subject') || '').trim();
+    const etsyLinks = String(findField(row, 'etsyLinks') || '').trim();
+    const linkReviewStatus = String(findField(row, 'linkReviewStatus') || '').trim();
+    const rawSourceFile = String(findField(row, 'rawSourceFile') || fileName).trim();
+    const isEtsySale = /etsy/i.test(`${sourceType} ${subject} ${etsyLinks} ${rawSourceFile}`);
+    const rowNotes = String(row.Notes || row.notes || '').trim();
 
     if (!email) invalid += 1;
     const key = email || `missing-email-${fileName}-${index}`;
@@ -228,6 +240,12 @@ function buildCustomers(rows, fileName = 'Imported File') {
       existing.duplicates += 1;
       existing.sources.add(fileName);
       existing.orderIds.push(orderId || `row-${index + 1}`);
+      if (etsyLinks) existing.etsyLinks = Array.from(new Set(`${existing.etsyLinks || ''} | ${etsyLinks}`.split('|').map((s) => s.trim()).filter(Boolean))).join(' | ');
+      if (subject && !existing.subject) existing.subject = subject;
+      if (sourceType && !existing.sourceType) existing.sourceType = sourceType;
+      if (linkReviewStatus && existing.linkReviewStatus !== 'Email Found') existing.linkReviewStatus = linkReviewStatus;
+      if (isEtsySale) existing.isEtsySale = true;
+      if (rowNotes) existing.notes = existing.notes ? `${existing.notes} ${rowNotes}` : rowNotes;
       if (!existing.name && name) existing.name = name;
       if (consent === 'Do Not Contact') existing.consent = 'Do Not Contact';
       if (consent === 'Marketing Eligible' && existing.consent === 'Unknown') existing.consent = 'Marketing Eligible';
@@ -241,12 +259,18 @@ function buildCustomers(rows, fileName = 'Imported File') {
         totalSpend: amount,
         lastPurchase: date,
         consent,
-        status: email ? 'Needs Review' : 'Do Not Contact',
-        notes: email ? 'Imported from authorized file. Consent must be verified before marketing use.' : 'No valid email found.',
+        status: email ? 'Needs Review' : isEtsySale ? 'Needs Review' : 'Do Not Contact',
+        notes: rowNotes || (email ? 'Imported from authorized file. Consent must be verified before marketing use.' : isEtsySale ? 'Etsy sales email found, but no buyer email was detected in the exported message source.' : 'No valid email found.'),
         duplicates: 0,
         sourceRows: 1,
         sources: new Set([fileName]),
-        orderIds: [orderId || `row-${index + 1}`]
+        orderIds: [orderId || `row-${index + 1}`],
+        sourceType,
+        subject,
+        etsyLinks,
+        linkReviewStatus: linkReviewStatus || (isEtsySale && !email ? 'Link Review Needed' : email ? 'Email Found' : 'Not Applicable'),
+        rawSourceFile,
+        isEtsySale
       });
     }
   });
@@ -254,8 +278,10 @@ function buildCustomers(rows, fileName = 'Imported File') {
   const customers = Array.from(map.values()).map((customer) => {
     const sources = Array.from(customer.sources).join(', ');
     let status = customer.status;
-    if (customer.consent === 'Do Not Contact' || !customer.email) status = 'Do Not Contact';
+    if (customer.consent === 'Do Not Contact') status = 'Do Not Contact';
+    else if (!customer.email && !customer.isEtsySale) status = 'Do Not Contact';
     else if (customer.consent === 'Marketing Eligible') status = 'Marketing Eligible';
+    else if (customer.isEtsySale && (!customer.email || customer.linkReviewStatus === 'Link Review Needed')) status = 'Needs Review';
     else if (customer.duplicates > 0) status = 'Needs Review';
     else status = 'Transactional Only';
 
@@ -287,6 +313,11 @@ function mergeCustomers(existing, incoming) {
       lastPurchase: [current.lastPurchase, customer.lastPurchase].filter(Boolean).sort().pop() || '',
       duplicates: current.duplicates + customer.duplicates + 1,
       sources: Array.from(new Set(`${current.sources}, ${customer.sources}`.split(',').map((s) => s.trim()).filter(Boolean))).join(', '),
+      sourceType: current.sourceType || customer.sourceType || '',
+      subject: current.subject || customer.subject || '',
+      etsyLinks: Array.from(new Set(`${current.etsyLinks || ''} | ${customer.etsyLinks || ''}`.split('|').map((s) => s.trim()).filter(Boolean))).join(' | '),
+      linkReviewStatus: current.linkReviewStatus === 'Email Found' || customer.linkReviewStatus === 'Email Found' ? 'Email Found' : (current.linkReviewStatus || customer.linkReviewStatus || 'Not Applicable'),
+      isEtsySale: Boolean(current.isEtsySale || customer.isEtsySale),
       consent: current.consent === 'Do Not Contact' || customer.consent === 'Do Not Contact'
         ? 'Do Not Contact'
         : current.consent === 'Marketing Eligible' || customer.consent === 'Marketing Eligible'
@@ -321,7 +352,7 @@ function downloadText(filename, text, mime = 'text/plain') {
 }
 
 function customersToCsv(customers) {
-  const headers = ['name', 'email', 'orders', 'totalSpend', 'lastPurchase', 'consent', 'status', 'sources', 'notes'];
+  const headers = ['name', 'email', 'orders', 'totalSpend', 'lastPurchase', 'consent', 'status', 'sourceType', 'subject', 'etsyLinks', 'linkReviewStatus', 'isEtsySale', 'sources', 'notes'];
   const lines = [headers.join(',')];
   customers.forEach((customer) => {
     lines.push(headers.map((header) => csvEscape(customer[header])).join(','));
@@ -397,14 +428,20 @@ function App() {
       dnc: customers.filter((c) => c.status === 'Do Not Contact').length,
       transactional: customers.filter((c) => c.status === 'Transactional Only').length,
       duplicates: customers.reduce((sum, c) => sum + c.duplicates, 0),
+      etsySales: customers.filter((c) => c.isEtsySale).length,
+      linkReview: customers.filter((c) => c.isEtsySale && (!c.email || c.linkReviewStatus === 'Link Review Needed')).length,
       totalSpend: totalSpend.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
     };
   }, [customers]);
 
   const filtered = useMemo(() => {
     return customers.filter((customer) => {
-      const matchesStatus = statusFilter === 'All' || customer.status === statusFilter;
-      const text = `${customer.name} ${customer.email} ${customer.sources} ${customer.notes}`.toLowerCase();
+      let matchesStatus = statusFilter === 'All' || customer.status === statusFilter;
+      if (statusFilter === 'Etsy Sales Emails') matchesStatus = Boolean(customer.isEtsySale);
+      if (statusFilter === 'Email Found') matchesStatus = Boolean(customer.email);
+      if (statusFilter === 'Email Missing') matchesStatus = !customer.email;
+      if (statusFilter === 'Link Review Needed') matchesStatus = Boolean(customer.isEtsySale && (!customer.email || customer.linkReviewStatus === 'Link Review Needed'));
+      const text = `${customer.name} ${customer.email} ${customer.sources} ${customer.notes} ${customer.subject || ''} ${customer.etsyLinks || ''}`.toLowerCase();
       return matchesStatus && text.includes(query.toLowerCase());
     });
   }, [customers, query, statusFilter]);
@@ -490,6 +527,18 @@ function App() {
       rows = customers.filter((c) => c.status === 'Do Not Contact');
       filename = 'do-not-contact-list.csv';
     }
+    if (type === 'etsy-links') {
+      rows = customers.filter((c) => c.isEtsySale && c.etsyLinks);
+      filename = 'etsy-link-review-queue.csv';
+    }
+    if (type === 'recovered-emails') {
+      rows = customers.filter((c) => c.isEtsySale && c.email);
+      filename = 'etsy-recovered-emails.csv';
+    }
+    if (type === 'missing-email') {
+      rows = customers.filter((c) => c.isEtsySale && !c.email);
+      filename = 'etsy-missing-email-review.csv';
+    }
     downloadText(filename, customersToCsv(rows), 'text/csv');
   }
 
@@ -504,7 +553,7 @@ function App() {
           <div className="brand-mark">CRC</div>
           <div>
             <h1>Customer Recovery Console</h1>
-            <p>Local cleanup and export desk</p>
+            <p>Etsy/Gmail recovery desk</p>
           </div>
         </div>
 
@@ -529,7 +578,7 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">MVP v0.1</p>
+            <p className="eyebrow">MVP v0.3 Etsy mode</p>
             <h2>{activeTab === 'home' ? 'Recovery dashboard' : activeTab.replace('-', ' ')}</h2>
           </div>
           <div className="status-pill">{lastMessage}</div>
@@ -539,8 +588,8 @@ function App() {
           <section className="panel-grid">
             <div className="hero-panel">
               <p className="eyebrow">Guided local recovery</p>
-              <h3>Recover customer records without overwhelming a non-technical client.</h3>
-              <p>Import authorized Etsy/customer files, dedupe records, classify contact risk, and export clean lists with an audit trail.</p>
+              <h3>Recover Etsy sales contacts from Gmail exports without 22,000 copy/paste actions.</h3>
+              <p>Import a Google Takeout MBOX, detect Etsy sales emails, extract available buyer emails and Etsy transaction links, then review and export clean records.</p>
               <div className="hero-actions">
                 <button className="primary" onClick={() => setActiveTab('import')}>Start Recovery</button>
                 <button className="secondary" onClick={loadSample}>Try Sample Project</button>
@@ -552,8 +601,8 @@ function App() {
               <StatCard label="Marketing eligible" value={stats.marketing} tone="good" />
               <StatCard label="Needs review" value={stats.review} tone="warn" />
               <StatCard label="Do not contact" value={stats.dnc} tone="danger" />
-              <StatCard label="Duplicates collapsed" value={stats.duplicates} />
-              <StatCard label="Tracked spend" value={stats.totalSpend} />
+              <StatCard label="Etsy sales emails" value={stats.etsySales} />
+              <StatCard label="Link review needed" value={stats.linkReview} tone="warn" />
             </div>
           </section>
         )}
@@ -561,8 +610,8 @@ function App() {
         {activeTab === 'import' && (
           <section className="content-card">
             <div className="section-heading">
-              <h3>Import customer files</h3>
-              <p>Drag in CSV or Excel files. The app automatically looks for names, emails, order IDs, dates, totals, and consent signals.</p>
+              <h3>Import Gmail Takeout or Etsy files</h3>
+              <p>Drag in a Gmail Takeout .mbox file, Etsy CSV export, Google Contacts CSV, or customer spreadsheet. Etsy sales emails are detected automatically.</p>
             </div>
 
             <label
@@ -584,7 +633,7 @@ function App() {
             <div className="help-grid">
               <article>
                 <strong>Best first file</strong>
-                <p>Etsy order CSV or any spreadsheet with customer name and email columns.</p>
+                <p>For this client: Gmail Takeout Mail .mbox filtered around Etsy sales emails.</p>
               </article>
               <article>
                 <strong>Privacy posture</strong>
@@ -608,7 +657,7 @@ function App() {
               <div className="review-controls">
                 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customers..." />
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                  {['All', 'Marketing Eligible', 'Transactional Only', 'Needs Review', 'Do Not Contact'].map((option) => <option key={option}>{option}</option>)}
+                  {['All', 'Etsy Sales Emails', 'Email Found', 'Email Missing', 'Link Review Needed', 'Marketing Eligible', 'Transactional Only', 'Needs Review', 'Do Not Contact'].map((option) => <option key={option}>{option}</option>)}
                 </select>
               </div>
             </div>
@@ -630,11 +679,14 @@ function App() {
                     <span>Last purchase: {customer.lastPurchase || 'Unknown'}</span>
                     <span>Duplicates: {customer.duplicates}</span>
                   </div>
+                  {customer.subject && <p className="source-line">Subject: {customer.subject}</p>}
+                  {customer.etsyLinks && <p className="source-line">Etsy links: {customer.etsyLinks.split(' | ').slice(0, 3).map((link, index) => <a key={link} href={link} target="_blank" rel="noreferrer">Open link {index + 1}</a>)}</p>}
                   <p className="source-line">Source: {customer.sources}</p>
                   <div className="record-actions">
                     <button onClick={() => updateCustomer(customer.id, { status: 'Marketing Eligible', consent: 'Marketing Eligible', notes: 'Operator marked consent as confirmed.' })}>Mark Marketing Eligible</button>
                     <button onClick={() => updateCustomer(customer.id, { status: 'Transactional Only', consent: 'Unknown', notes: 'Limited to order/support/admin use unless consent is later confirmed.' })}>Transactional Only</button>
                     <button onClick={() => updateCustomer(customer.id, { status: 'Do Not Contact', consent: 'Do Not Contact', notes: 'Marked as suppressed/do-not-contact.' })}>Do Not Contact</button>
+                    {customer.isEtsySale && <button onClick={() => updateCustomer(customer.id, { linkReviewStatus: 'Reviewed - No Email Available', notes: 'Operator reviewed Etsy link; no buyer email available in exported source.' })}>Reviewed / No Email</button>}
                   </div>
                 </article>
               ))}
@@ -680,6 +732,9 @@ function App() {
               <button onClick={() => exportCsv('marketing')}>Export Marketing Eligible Only</button>
               <button onClick={() => exportCsv('transactional')}>Export Transactional/Support List</button>
               <button onClick={() => exportCsv('dnc')}>Export Do-Not-Contact List</button>
+              <button onClick={() => exportCsv('etsy-links')}>Export Etsy Link Review Queue</button>
+              <button onClick={() => exportCsv('recovered-emails')}>Export Etsy Recovered Emails</button>
+              <button onClick={() => exportCsv('missing-email')}>Export Etsy Missing Email Review</button>
               <button onClick={exportAudit}>Export Audit Report</button>
             </div>
             <div className="acknowledgment-box">
