@@ -515,7 +515,17 @@ function App() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
   const [isDragging, setIsDragging] = useState(false);
-  const [lastMessage, setLastMessage] = useState('Ready to import authorized customer files.');
+  const [lastMessage, setLastMessage] = useState('Ready to import a Gmail Takeout .mbox or authorized Etsy customer file.');
+  const [selectedExports, setSelectedExports] = useState({
+    recoveredEmails: true,
+    etsyLinks: true,
+    missingEmail: true,
+    audit: true,
+    dnc: false,
+    transactional: false,
+    marketing: false,
+    full: false
+  });
 
   useEffect(() => {
     localStorage.setItem('crc.customers', JSON.stringify(customers));
@@ -546,6 +556,9 @@ function App() {
       duplicates: customers.reduce((sum, c) => sum + c.duplicates, 0),
       etsySales: customers.filter((c) => c.isEtsySale).length,
       linkReview: customers.filter((c) => c.isEtsySale && (!c.email || c.linkReviewStatus === 'Link Review Needed')).length,
+      recoveredEmails: customers.filter((c) => c.isEtsySale && c.email).length,
+      missingEmails: customers.filter((c) => c.isEtsySale && !c.email).length,
+      linksCaptured: customers.filter((c) => c.isEtsySale && c.etsyLinks).length,
       totalSpend: totalSpend.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
     };
   }, [customers]);
@@ -608,7 +621,7 @@ function App() {
         const { customers: imported } = buildCustomers(rows, file.name);
         setCustomers((prev) => mergeCustomers(prev, imported));
         setImportHistory((prev) => [...prev, { file: file.name, rows: rows.length, customers: imported.length }]);
-        setLastMessage(`Imported ${rows.length} rows from ${file.name}. Found ${imported.length} customer records.`);
+        setLastMessage(`Import complete: ${file.name}. Scanned ${rows.length} row(s), created ${imported.length} recovery record(s). Review recovered emails and link-review items next.`);
       } catch (error) {
         setLastMessage(`Could not import ${file.name}: ${error.message}`);
       }
@@ -620,7 +633,7 @@ function App() {
     const { customers: imported } = buildCustomers(SAMPLE_ROWS, 'Sample Etsy Orders.csv');
     setCustomers(imported);
     setImportHistory([{ file: 'Sample Etsy Orders.csv', rows: SAMPLE_ROWS.length, customers: imported.length }]);
-    setLastMessage('Loaded sample project. You can test review, filters, and exports safely.');
+    setLastMessage('Loaded sample Etsy recovery project. You can test review queues and multi-export safely.');
     setActiveTab('review');
   }
 
@@ -628,7 +641,7 @@ function App() {
     setCustomers((prev) => prev.map((customer) => customer.id === id ? { ...customer, ...updates } : customer));
   }
 
-  function exportCsv(type) {
+  function exportCsv(type, silent = false) {
     let rows = customers;
     let filename = 'customer-recovery-full.csv';
     if (type === 'marketing') {
@@ -656,10 +669,89 @@ function App() {
       filename = 'etsy-missing-email-review.csv';
     }
     downloadText(filename, customersToCsv(rows), 'text/csv');
+    if (!silent) setLastMessage(`Exported ${filename} with ${rows.length} record(s).`);
+    return { filename, count: rows.length };
   }
 
-  function exportAudit() {
+  function exportAudit(silent = false) {
     downloadText('customer-recovery-audit-report.md', auditMarkdown(customers, importHistory), 'text/markdown');
+    if (!silent) setLastMessage('Exported customer-recovery-audit-report.md.');
+    return { filename: 'customer-recovery-audit-report.md', count: customers.length };
+  }
+
+  const exportOptions = [
+    {
+      key: 'recoveredEmails',
+      label: 'Recovered Etsy Emails',
+      detail: 'Buyer emails found in Etsy sale messages.',
+      count: stats.recoveredEmails,
+      action: (silent) => exportCsv('recovered-emails', silent)
+    },
+    {
+      key: 'etsyLinks',
+      label: 'Etsy Link Review Queue',
+      detail: 'Captured Etsy order/buyer links for review.',
+      count: stats.linksCaptured,
+      action: (silent) => exportCsv('etsy-links', silent)
+    },
+    {
+      key: 'missingEmail',
+      label: 'Missing Email Review',
+      detail: 'Etsy records where no buyer email was found.',
+      count: stats.missingEmails,
+      action: (silent) => exportCsv('missing-email', silent)
+    },
+    {
+      key: 'audit',
+      label: 'Audit Report',
+      detail: 'Markdown summary of imports, counts, and safety notes.',
+      count: customers.length,
+      action: (silent) => exportAudit(silent)
+    },
+    {
+      key: 'dnc',
+      label: 'Do-Not-Contact List',
+      detail: 'Suppressed or excluded records.',
+      count: stats.dnc,
+      action: (silent) => exportCsv('dnc', silent)
+    },
+    {
+      key: 'transactional',
+      label: 'Transactional / Support List',
+      detail: 'Records limited to order, admin, or support use.',
+      count: stats.transactional,
+      action: (silent) => exportCsv('transactional', silent)
+    },
+    {
+      key: 'marketing',
+      label: 'Marketing Eligible Only',
+      detail: 'Only records manually marked as consent-confirmed.',
+      count: stats.marketing,
+      action: (silent) => exportCsv('marketing', silent)
+    },
+    {
+      key: 'full',
+      label: 'Full Clean CSV',
+      detail: 'All deduped recovery records.',
+      count: stats.total,
+      action: (silent) => exportCsv('full', silent)
+    }
+  ];
+
+  function toggleExportOption(key) {
+    setSelectedExports((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
+
+  function exportSelectedFiles() {
+    const selected = exportOptions.filter((option) => selectedExports[option.key]);
+
+    if (!selected.length) {
+      setLastMessage('Select at least one export file before exporting.');
+      return;
+    }
+
+    selected.forEach((option) => option.action(true));
+    setLastMessage(`Exported ${selected.length} selected file(s): ${selected.map((option) => option.label).join(', ')}.`);
   }
 
   return (
@@ -668,18 +760,17 @@ function App() {
         <div className="brand-block">
           <div className="brand-mark">CRC</div>
           <div>
-            <h1>Customer Recovery Console</h1>
-            <p>Etsy/Gmail recovery desk</p>
+            <h1>Etsy Recovery Tool</h1>
+            <p>Gmail Takeout recovery desk</p>
           </div>
         </div>
 
         <nav className="nav-list">
           {[
-            ['home', 'Home'],
+            ['home', 'Dashboard'],
             ['import', 'Import'],
             ['review', 'Review'],
-            ['outreach', 'Outreach Prep'],
-            ['export', 'Export Center']
+            ['export', 'Export']
           ].map(([id, label]) => (
             <button key={id} className={activeTab === id ? 'active' : ''} onClick={() => setActiveTab(id)}>{label}</button>
           ))}
@@ -694,8 +785,8 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">MVP v0.3 Etsy mode</p>
-            <h2>{activeTab === 'home' ? 'Recovery dashboard' : activeTab.replace('-', ' ')}</h2>
+            <p className="eyebrow">MVP v0.4 Client Recovery Build</p>
+            <h2>{activeTab === 'home' ? 'Dashboard' : activeTab === 'import' ? 'Import Takeout' : activeTab === 'review' ? 'Review Records' : 'Export Files'}</h2>
           </div>
           <div className="status-pill">{lastMessage}</div>
         </header>
@@ -704,8 +795,13 @@ function App() {
           <section className="panel-grid">
             <div className="hero-panel">
               <p className="eyebrow">Guided local recovery</p>
-              <h3>Recover Etsy sales contacts from Gmail exports without 22,000 copy/paste actions.</h3>
-              <p>Import a Google Takeout MBOX, detect Etsy sales emails, extract available buyer emails and Etsy transaction links, then review and export clean records.</p>
+              <h3>Etsy Recovery Tool</h3>
+              <p>Import a Gmail Takeout file, recover available Etsy buyer emails, capture Etsy order links, and export a clean review package.</p>
+              <div className="workflow-steps" aria-label="Recovery workflow">
+                <span>1. Import</span>
+                <span>2. Review</span>
+                <span>3. Export</span>
+              </div>
               <div className="hero-actions">
                 <button className="primary" onClick={() => setActiveTab('import')}>Start Recovery</button>
                 <button className="secondary" onClick={loadSample}>Try Sample Project</button>
@@ -713,12 +809,12 @@ function App() {
               </div>
             </div>
             <div className="stat-grid">
-              <StatCard label="Unique records" value={stats.total} />
-              <StatCard label="Marketing eligible" value={stats.marketing} tone="good" />
-              <StatCard label="Needs review" value={stats.review} tone="warn" />
-              <StatCard label="Do not contact" value={stats.dnc} tone="danger" />
-              <StatCard label="Etsy sales emails" value={stats.etsySales} />
+              <StatCard label="Etsy sales emails found" value={stats.etsySales} />
+              <StatCard label="Buyer emails recovered" value={stats.recoveredEmails} tone="good" />
+              <StatCard label="Links captured" value={stats.linksCaptured} />
               <StatCard label="Link review needed" value={stats.linkReview} tone="warn" />
+              <StatCard label="Duplicates collapsed" value={stats.duplicates} />
+              <StatCard label="Do not contact" value={stats.dnc} tone="danger" />
             </div>
           </section>
         )}
@@ -726,8 +822,8 @@ function App() {
         {activeTab === 'import' && (
           <section className="content-card">
             <div className="section-heading">
-              <h3>Import Gmail Takeout or Etsy files</h3>
-              <p>Drag in a Gmail Takeout .mbox file, Etsy CSV export, Google Contacts CSV, or customer spreadsheet. Etsy sales emails are detected automatically.</p>
+              <h3>Import Google Takeout</h3>
+              <p>Drop the Gmail Takeout .mbox file here. The tool scans Etsy sale emails, extracts buyer emails when present, and captures Etsy links for review.</p>
             </div>
 
             <label
@@ -742,22 +838,22 @@ function App() {
             >
               <input type="file" multiple accept=".csv,.txt,.xlsx,.xls,.mbox,.eml" onChange={(event) => handleFiles(event.target.files)} />
               <span className="upload-icon">⇪</span>
-              <strong>Drop files here or tap to choose</strong>
-              <small>Supported: CSV, TXT, XLS, XLSX, MBOX, EML</small>
+              <strong>Drop Gmail Takeout .mbox here or tap to choose</strong>
+              <small>Also supported: CSV, TXT, XLS, XLSX, EML</small>
             </label>
 
             <div className="help-grid">
               <article>
-                <strong>Best first file</strong>
-                <p>For this client: Gmail Takeout Mail .mbox filtered around Etsy sales emails.</p>
+                <strong>Best file</strong>
+                <p>Gmail Takeout Mail .mbox. If Takeout gives you a .zip, unzip it first and drag the .mbox file here.</p>
               </article>
               <article>
                 <strong>Privacy posture</strong>
                 <p>Files are processed locally in the app. Do not import data the client is not authorized to access.</p>
               </article>
               <article>
-                <strong>Coming later</strong>
-                <p>Now supports first-pass Gmail Takeout MBOX and EML import. SQLite project storage and PDF reports are planned next.</p>
+                <strong>What happens next</strong>
+                <p>After import, review Email Found, Link Review Needed, and Missing Email queues before exporting the package.</p>
               </article>
             </div>
           </section>
@@ -767,13 +863,13 @@ function App() {
           <section className="content-card full-height">
             <div className="section-heading split">
               <div>
-                <h3>Review customer records</h3>
-                <p>Search, filter, and classify records before export.</p>
+                <h3>Review recovery queues</h3>
+                <p>Confirm recovered buyer emails, inspect Etsy links, and mark records before export.</p>
               </div>
               <div className="review-controls">
                 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customers..." />
                 <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-                  {['All', 'Etsy Sales Emails', 'Email Found', 'Email Missing', 'Link Review Needed', 'Marketing Eligible', 'Transactional Only', 'Needs Review', 'Do Not Contact'].map((option) => <option key={option}>{option}</option>)}
+                  {['All', 'Etsy Sales Emails', 'Email Found', 'Link Review Needed', 'Email Missing', 'Transactional Only', 'Needs Review', 'Do Not Contact', 'Marketing Eligible'].map((option) => <option key={option}>{option}</option>)}
                 </select>
               </div>
             </div>
@@ -787,7 +883,10 @@ function App() {
                       <h4>{customer.name}</h4>
                       <p>{customer.email || 'No valid email detected'}</p>
                     </div>
-                    <span className="record-status">{customer.status}</span>
+                    <div className="status-stack">
+                      <span className="record-status">{customer.status}</span>
+                      {customer.isEtsySale && <span className="record-status secondary-status">{customer.linkReviewStatus || 'Review pending'}</span>}
+                    </div>
                   </div>
                   <div className="record-meta">
                     <span>Orders: {customer.orders}</span>
@@ -799,10 +898,12 @@ function App() {
                   {customer.etsyLinks && <p className="source-line">Etsy links: {customer.etsyLinks.split(' | ').slice(0, 3).map((link, index) => <a key={link} href={link} target="_blank" rel="noreferrer">Open link {index + 1}</a>)}</p>}
                   <p className="source-line">Source: {customer.sources}</p>
                   <div className="record-actions">
-                    <button onClick={() => updateCustomer(customer.id, { status: 'Marketing Eligible', consent: 'Marketing Eligible', notes: 'Operator marked consent as confirmed.' })}>Mark Marketing Eligible</button>
+                    {customer.email && <button onClick={() => { navigator.clipboard?.writeText(customer.email); setLastMessage(`Copied ${customer.email} to clipboard.`); }}>Copy Email</button>}
+                    {customer.etsyLinks && <button onClick={() => window.open(customer.etsyLinks.split(' | ')[0], '_blank', 'noopener,noreferrer')}>Open Etsy Link</button>}
                     <button onClick={() => updateCustomer(customer.id, { status: 'Transactional Only', consent: 'Unknown', notes: 'Limited to order/support/admin use unless consent is later confirmed.' })}>Transactional Only</button>
                     <button onClick={() => updateCustomer(customer.id, { status: 'Do Not Contact', consent: 'Do Not Contact', notes: 'Marked as suppressed/do-not-contact.' })}>Do Not Contact</button>
                     {customer.isEtsySale && <button onClick={() => updateCustomer(customer.id, { linkReviewStatus: 'Reviewed - No Email Available', notes: 'Operator reviewed Etsy link; no buyer email available in exported source.' })}>Reviewed / No Email</button>}
+                    <button onClick={() => updateCustomer(customer.id, { status: 'Marketing Eligible', consent: 'Marketing Eligible', notes: 'Operator marked consent as confirmed.' })}>Mark Marketing Eligible</button>
                   </div>
                 </article>
               ))}
@@ -840,18 +941,43 @@ function App() {
         {activeTab === 'export' && (
           <section className="content-card">
             <div className="section-heading">
-              <h3>Export center</h3>
-              <p>Create clean lists and an audit report for client handoff.</p>
+              <h3>Export recovery package</h3>
+              <p>Select one or more files, then export them together for client handoff.</p>
             </div>
-            <div className="export-grid">
-              <button onClick={() => exportCsv('full')}>Export Full Clean CSV</button>
-              <button onClick={() => exportCsv('marketing')}>Export Marketing Eligible Only</button>
-              <button onClick={() => exportCsv('transactional')}>Export Transactional/Support List</button>
-              <button onClick={() => exportCsv('dnc')}>Export Do-Not-Contact List</button>
-              <button onClick={() => exportCsv('etsy-links')}>Export Etsy Link Review Queue</button>
-              <button onClick={() => exportCsv('recovered-emails')}>Export Etsy Recovered Emails</button>
-              <button onClick={() => exportCsv('missing-email')}>Export Etsy Missing Email Review</button>
-              <button onClick={exportAudit}>Export Audit Report</button>
+            <div className="export-options">
+              {exportOptions.map((option) => (
+                <label key={option.key} className={`export-option ${selectedExports[option.key] ? 'selected' : ''}`}>
+                  <input type="checkbox" checked={Boolean(selectedExports[option.key])} onChange={() => toggleExportOption(option.key)} />
+                  <span>
+                    <strong>{option.label}</strong>
+                    <small>{option.detail}</small>
+                  </span>
+                  <em>{option.count}</em>
+                </label>
+              ))}
+            </div>
+            <div className="button-row">
+              <button className="primary export-selected-button" onClick={exportSelectedFiles}>Export Selected Files</button>
+              <button className="secondary" onClick={() => setSelectedExports({
+                recoveredEmails: true,
+                etsyLinks: true,
+                missingEmail: true,
+                audit: true,
+                dnc: false,
+                transactional: false,
+                marketing: false,
+                full: false
+              })}>Recommended Set</button>
+              <button className="secondary" onClick={() => setSelectedExports({
+                recoveredEmails: true,
+                etsyLinks: true,
+                missingEmail: true,
+                audit: true,
+                dnc: true,
+                transactional: true,
+                marketing: false,
+                full: true
+              })}>Select All Safe Exports</button>
             </div>
             <div className="acknowledgment-box">
               <strong>Before client use</strong>

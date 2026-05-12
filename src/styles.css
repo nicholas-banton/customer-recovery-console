@@ -519,3 +519,339 @@ button {
     font-size: 0.72rem;
   }
 }
+
+/* v0.4 Client UI/UX polish */
+.workflow-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin: 1rem 0 1.25rem;
+}
+
+.workflow-steps span {
+  border: 1px solid rgba(147, 197, 253, 0.22);
+  background: rgba(37, 99, 235, 0.14);
+  color: #bfdbfe;
+  border-radius: 999px;
+  padding: 0.48rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.status-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+.secondary-status {
+  color: #fde68a;
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.28);
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.export-options {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.export-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.9rem;
+  min-height: 4.8rem;
+  padding: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 1.1rem;
+  background: rgba(15, 23, 42, 0.38);
+  cursor: pointer;
+}
+
+.export-option.selected {
+  border-color: rgba(96, 165, 250, 0.52);
+  background: rgba(37, 99, 235, 0.16);
+}
+
+.export-option input {
+  width: 1.15rem;
+  height: 1.15rem;
+  accent-color: #60a5fa;
+}
+
+.export-option strong {
+  display: block;
+  margin-bottom: 0.18rem;
+}
+
+.export-option small {
+  display: block;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.export-option em {
+  display: grid;
+  place-items: center;
+  min-width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 999px;
+  color: #bfdbfe;
+  background: rgba(30, 41, 59, 0.9);
+  font-style: normal;
+  font-weight: 900;
+}
+
+.export-selected-button {
+  min-width: 13rem;
+}
+
+.record-card {
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.record-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(96, 165, 250, 0.36);
+}
+
+.record-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  border: 1px solid rgba(96, 165, 250, 0.25);
+  border-radius: 999px;
+  padding: 0.34rem 0.6rem;
+  color: #bfdbfe;
+  background: rgba(37, 99, 235, 0.14);
+  font-size: 0.78rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.source-line a {
+  color: #93c5fd;
+  font-weight: 800;
+  margin-right: 0.75rem;
+}
+
+.primary,
+.secondary,
+.record-actions button,
+.export-selected-button {
+  min-height: 44px;
+}
+
+.mobile-nav {
+  display: none;
+}
+
+/* Smartphone / small tablet */
+@media (max-width: 900px) {
+  body {
+    background: radial-gradient(circle at top, rgba(59, 130, 246, 0.18), transparent 28rem), #0f172a;
+  }
+
+  .app-shell {
+    display: block;
+    min-height: 100vh;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .main-content {
+    padding: 0.9rem;
+    padding-bottom: 5.8rem;
+  }
+
+  .topbar {
+    flex-direction: column;
+    gap: 0.7rem;
+  }
+
+  .status-pill {
+    width: 100%;
+    max-width: none;
+    border-radius: 1rem;
+    line-height: 1.35;
+  }
+
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero-panel {
+    min-height: auto;
+    padding: 1.15rem;
+  }
+
+  .hero-panel h3 {
+    font-size: clamp(2.25rem, 12vw, 3.5rem);
+    letter-spacing: -0.07em;
+  }
+
+  .hero-panel p {
+    font-size: 0.98rem;
+  }
+
+  .stat-grid,
+  .help-grid,
+  .template-grid,
+  .export-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .split {
+    flex-direction: column;
+  }
+
+  .review-controls {
+    width: 100%;
+    flex-direction: column;
+  }
+
+  .review-controls input,
+  .review-controls select {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .record-main {
+    align-items: flex-start;
+    gap: 0.8rem;
+  }
+
+  .status-stack {
+    align-items: flex-start;
+  }
+
+  .record-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .record-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .record-actions button,
+  .hero-actions button,
+  .button-row button {
+    width: 100%;
+  }
+
+  .drop-zone {
+    min-height: 15rem;
+  }
+
+  .mobile-nav {
+    position: fixed;
+    left: 0.75rem;
+    right: 0.75rem;
+    bottom: 0.75rem;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.35rem;
+    padding: 0.45rem;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 1.15rem;
+    background: rgba(15, 23, 42, 0.94);
+    backdrop-filter: blur(16px);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  }
+
+  .mobile-nav button {
+    min-height: 44px;
+    text-align: center;
+    padding: 0.65rem 0.35rem;
+    font-size: 0.78rem;
+    font-weight: 850;
+  }
+}
+
+/* PDA / very narrow utility screens */
+@media (max-width: 430px) {
+  .main-content {
+    padding: 0.7rem;
+    padding-bottom: 5.5rem;
+  }
+
+  .topbar h2 {
+    font-size: 1.45rem;
+  }
+
+  .eyebrow {
+    font-size: 0.64rem;
+  }
+
+  .hero-panel,
+  .content-card,
+  .record-card,
+  .stat-card {
+    border-radius: 1rem;
+  }
+
+  .hero-panel h3 {
+    font-size: 2.25rem;
+    line-height: 0.96;
+  }
+
+  .workflow-steps {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .stat-card {
+    min-height: 5.6rem;
+  }
+
+  .stat-card strong {
+    font-size: 2rem;
+  }
+
+  .section-heading h3 {
+    font-size: 1.35rem;
+  }
+
+  .drop-zone {
+    min-height: 13rem;
+    padding: 1rem;
+  }
+
+  .upload-icon {
+    width: 3.25rem;
+    height: 3.25rem;
+    font-size: 1.6rem;
+  }
+
+  .export-option {
+    grid-template-columns: auto 1fr;
+    align-items: flex-start;
+  }
+
+  .export-option em {
+    grid-column: 2;
+    justify-self: start;
+    min-width: 2rem;
+    height: 2rem;
+  }
+
+  .mobile-nav {
+    left: 0.45rem;
+    right: 0.45rem;
+    bottom: 0.45rem;
+  }
+}
