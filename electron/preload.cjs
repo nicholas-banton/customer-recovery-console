@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('crcApp', {
   platform: process.platform,
-  version: '0.5.0',
+  version: '1.0.0',
   runtime: 'electron',
 
   // Legacy invoke path retained as fallback.

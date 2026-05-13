@@ -1,8 +1,8 @@
 {
   "name": "customer-recovery-console",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "Local customer recovery, cleanup, consent review, and export console for authorized marketplace/customer data files.",
+  "description": "Local advanced email recovery tool for authorized mailbox exports.",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -35,8 +35,8 @@
   },
   "build": {
     "appId": "com.customerrecovery.console",
-    "productName": "Customer Recovery Console",
-    "copyright": "Copyright © 2026 Customer Recovery Console",
+    "productName": "Advanced Email Recovery Tool",
+    "copyright": "Copyright \u00a9 2026 Advanced Email Recovery Tool",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "directories": {
@@ -72,7 +72,7 @@
       ]
     },
     "dmg": {
-      "title": "Customer Recovery Console ${version}",
+      "title": "Advanced Email Recovery Tool ${version}",
       "contents": [
         {
           "x": 130,
@@ -103,8 +103,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Customer Recovery Console",
-      "uninstallDisplayName": "Customer Recovery Console"
+      "shortcutName": "Advanced Email Recovery Tool",
+      "uninstallDisplayName": "Advanced Email Recovery Tool"
     }
   },
   "author": "Nicholas Banton"

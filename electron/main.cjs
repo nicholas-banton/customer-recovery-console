@@ -424,6 +424,41 @@ function extractEtsyLink(message) {
     .replace(/&amp;/g, '&');
 }
 
+function normalizeMoneyValue(value) {
+  const raw = cleanText(value).replace(/,/g, '');
+  const match =
+    raw.match(/(?:USD\s*)?\$\s*([0-9]+(?:\.[0-9]{2})?)/i) ||
+    raw.match(/(?:USD\s*)?([0-9]+(?:\.[0-9]{2}))/i);
+
+  if (!match?.[1]) return '';
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) return '';
+
+  return amount.toFixed(2);
+}
+
+function extractOrderTotal(message) {
+  const text = decodeQuotedPrintableFragments(String(message || ''))
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const patterns = [
+    /(?:order\s*total|grand\s*total|total\s*paid|amount\s*paid|total\s*charged|payment\s*total|you\s*paid)\s*[:\-]?\s*((?:USD\s*)?\$?\s*[0-9][0-9,]*(?:\.[0-9]{2})?)/i,
+    /((?:USD\s*)?\$\s*[0-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:order\s*total|total\s*paid|amount\s*paid|paid)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const amount = normalizeMoneyValue(match?.[1] || '');
+    if (amount) return amount;
+  }
+
+  return '';
+}
+
 function inferEtsyOrderId(message, messageIndex) {
   const text = String(message || '');
 
@@ -439,7 +474,7 @@ function inferEtsyOrderId(message, messageIndex) {
     if (match?.[1]) return match[1];
   }
 
-  return `MBOX-${String(messageIndex).padStart(6, '0')}`;
+  return '';
 }
 
 function buildEtsyRecoveryRow({ email, messageIndex, headers, message, fileName }) {
@@ -453,7 +488,7 @@ function buildEtsyRecoveryRow({ email, messageIndex, headers, message, fileName 
     'Customer Email': clipText(email || '', 160),
     'Order ID': clipText(inferEtsyOrderId(messageSample, messageIndex), 80),
     'Order Date': clipText(headers.date || '', 120),
-    'Order Total': '0',
+    'Order Total': extractOrderTotal(messageSample),
     'Marketing Consent': 'Unknown',
     'Source Type': 'Etsy Gmail Takeout',
     'Subject': clipText(headers.subject || '', 220),
@@ -1027,7 +1062,7 @@ function createWindow() {
     height: 860,
     minWidth: 320,
     minHeight: 560,
-    title: 'Customer Recovery Console',
+    title: 'Advanced Email Recovery Tool',
     backgroundColor: '#0f172a',
     show: false,
     webPreferences: {

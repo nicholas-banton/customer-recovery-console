@@ -131,6 +131,43 @@ function inferBuyerNameFromMessage(messageText, email) {
   return 'Email missing — review Etsy link';
 }
 
+function normalizeMoneyValue(value) {
+  const raw = cleanText(value).replace(/,/g, '');
+  const match =
+    raw.match(/(?:USD\s*)?\$\s*([0-9]+(?:\.[0-9]{2})?)/i) ||
+    raw.match(/(?:USD\s*)?([0-9]+(?:\.[0-9]{2}))/i);
+
+  if (!match?.[1]) return '';
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) return '';
+
+  return amount.toFixed(2);
+}
+
+function extractOrderTotal(messageText) {
+  const text = String(messageText || '')
+    .replace(/=0D=0A|=0A|=0D/gi, '\n')
+    .replace(/=20/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const patterns = [
+    /(?:order\s*total|grand\s*total|total\s*paid|amount\s*paid|total\s*charged|payment\s*total|you\s*paid)\s*[:\-]?\s*((?:USD\s*)?\$?\s*[0-9][0-9,]*(?:\.[0-9]{2})?)/i,
+    /((?:USD\s*)?\$\s*[0-9][0-9,]*(?:\.[0-9]{2})?)\s*(?:order\s*total|total\s*paid|amount\s*paid|paid)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const amount = normalizeMoneyValue(match?.[1] || '');
+    if (amount) return amount;
+  }
+
+  return '';
+}
+
 function inferEtsyOrderId(messageText, fallbackIndex) {
   const value = String(messageText || '');
 
@@ -140,7 +177,7 @@ function inferEtsyOrderId(messageText, fallbackIndex) {
   const orderMatch = value.match(/(?:order|order_id|receipt|transaction)[^\d]{0,12}(\d{4,})/i);
   if (orderMatch) return orderMatch[1];
 
-  return `etsy-message-${fallbackIndex}`;
+  return '';
 }
 
 function buildEtsyRecoveryRow({ email, messageIndex, headers, message, fileName }) {
@@ -153,7 +190,7 @@ function buildEtsyRecoveryRow({ email, messageIndex, headers, message, fileName 
     'Customer Email': email || '',
     'Order ID': inferEtsyOrderId(message, messageIndex),
     'Order Date': headers.date || '',
-    'Order Total': '0',
+    'Order Total': extractOrderTotal(message),
     'Marketing Consent': 'Unknown',
     'Source Type': 'Etsy Gmail Takeout',
     'Subject': headers.subject || '',
@@ -388,7 +425,7 @@ function buildCustomers(rows, fileName = 'Imported File') {
         duplicates: 0,
         sourceRows: 1,
         sources: new Set([fileName]),
-        orderIds: [orderId || `row-${index + 1}`],
+        orderIds: orderId ? [orderId] : [],
         sourceType,
         subject,
         etsyLinks,
@@ -432,7 +469,7 @@ function mergeCustomers(existing, incoming) {
     byEmail.set(key, {
       ...current,
       name: current.name !== 'Name missing' ? current.name : customer.name,
-      orders: current.orders + customer.orders,
+      orders: Array.from(new Set([...(current.orderIds || []), ...(customer.orderIds || [])].filter(Boolean))).length,
       totalSpend: Number((current.totalSpend + customer.totalSpend).toFixed(2)),
       lastPurchase: [current.lastPurchase, customer.lastPurchase].filter(Boolean).sort().pop() || '',
       duplicates: current.duplicates + customer.duplicates + 1,
@@ -887,8 +924,8 @@ function App() {
         <div className="brand-block">
           <div className="brand-mark">CRC</div>
           <div>
-            <h1>Etsy Recovery Tool</h1>
-            <p>Gmail Takeout recovery desk</p>
+            <h1>Advanced Email Recovery Tool</h1>
+            <p>Local mailbox recovery desk</p>
           </div>
         </div>
 
@@ -903,17 +940,13 @@ function App() {
           ))}
         </nav>
 
-        <div className="safety-card">
-          <strong>Safety boundary</strong>
-          <p>Only import files your client is legally allowed to provide. This MVP does not scrape Etsy or send bulk email.</p>
-        </div>
       </aside>
 
       <main className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">MVP v0.5 Client Recovery Build</p>
-            <h2>{activeTab === 'home' ? 'Dashboard' : activeTab === 'import' ? 'Import Takeout' : activeTab === 'review' ? 'Review Records' : 'Export Files'}</h2>
+            <p className="eyebrow">Version 1.0 Client Recovery Build</p>
+            <h2>{activeTab === 'home' ? 'Dashboard' : activeTab === 'import' ? 'Import Mailbox' : activeTab === 'review' ? 'Review Records' : 'Export Files'}</h2>
           </div>
           <div className="status-stack">
             <div className="status-pill">{lastMessage}</div>
@@ -946,7 +979,7 @@ function App() {
           <section className="panel-grid">
             <div className="hero-panel">
               <p className="eyebrow">Guided local recovery</p>
-              <h3>Etsy Recovery Tool</h3>
+              <h3>Advanced Email Recovery Tool</h3>
               <p>Import a Gmail Takeout file, recover available Etsy buyer emails, capture Etsy order links, and export a clean review package.</p>
               <div className="workflow-steps" aria-label="Recovery workflow">
                 <span>1. Import</span>
@@ -973,7 +1006,7 @@ function App() {
         {activeTab === 'import' && (
           <section className="content-card">
             <div className="section-heading">
-              <h3>Import Google Takeout</h3>
+              <h3>Import Mailbox</h3>
               <p>Choose the Gmail Takeout .mbox file from your computer. The tool scans Etsy sale emails, extracts buyer emails when present, and captures Etsy links for review.</p>
             </div>
 
@@ -1068,8 +1101,8 @@ function App() {
                     </div>
                   </div>
                   <div className="record-meta">
-                    <span>Orders: {customer.orders}</span>
-                    <span>Spend: {customer.totalSpend.toLocaleString(undefined, { style: 'currency', currency: 'USD' })}</span>
+                    <span>Orders: {customer.orders || 'Unknown'}</span>
+                    <span>Spend: {customer.totalSpend > 0 ? customer.totalSpend.toLocaleString(undefined, { style: 'currency', currency: 'USD' }) : 'Unknown'}</span>
                     <span>Last purchase: {customer.lastPurchase || 'Unknown'}</span>
                     <span>Duplicates: {customer.duplicates}</span>
                   </div>
@@ -1109,10 +1142,6 @@ function App() {
                 <strong>Support-only follow-up</strong>
                 <p>Use for order/admin matters. Keep it transactional, specific, and non-promotional.</p>
               </article>
-            </div>
-            <div className="warning-box">
-              <strong>Operator warning</strong>
-              <p>Do not export marketplace buyers into a marketing platform unless consent or another lawful basis has been confirmed.</p>
             </div>
           </section>
         )}
@@ -1158,10 +1187,7 @@ function App() {
                 full: true
               })}>Select All Safe Exports</button>
             </div>
-            <div className="acknowledgment-box">
-              <strong>Before client use</strong>
-              <p>The operator should verify consent records, platform terms, and applicable email/privacy law before any marketing export is used.</p>
-            </div>
+            
           </section>
         )}
       </main>
