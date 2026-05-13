@@ -210,6 +210,14 @@ function mboxToRows(text, fileName = 'Gmail Takeout.mbox') {
   return rows;
 }
 
+function hasDesktopMboxPicker() {
+  return (
+    typeof window !== 'undefined' &&
+    window.crcApp &&
+    typeof window.crcApp.selectMboxFile === 'function'
+  );
+}
+
 function emlToRows(text, fileName = 'Imported Email.eml') {
   const message = String(text || '');
   const headers = parseEmailHeaderBlock(message);
@@ -516,6 +524,7 @@ function App() {
   const [statusFilter, setStatusFilter] = useState('All');
   const [isDragging, setIsDragging] = useState(false);
   const [lastMessage, setLastMessage] = useState('Ready to import a Gmail Takeout .mbox or authorized Etsy customer file.');
+  const [importProgress, setImportProgress] = useState(null);
   const [selectedExports, setSelectedExports] = useState({
     recoveredEmails: true,
     etsyLinks: true,
@@ -534,6 +543,38 @@ function App() {
   useEffect(() => {
     localStorage.setItem('crc.importHistory', JSON.stringify(importHistory));
   }, [importHistory]);
+
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      !window.crcApp ||
+      typeof window.crcApp.onMboxImportProgress !== 'function'
+    ) {
+      return undefined;
+    }
+
+    return window.crcApp.onMboxImportProgress((progress) => {
+      setImportProgress(progress);
+      if (progress?.message) {
+        setLastMessage(progress.message);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (
+      typeof window === 'undefined' ||
+      !window.crcApp ||
+      typeof window.crcApp.onMboxImportComplete !== 'function'
+    ) {
+      return undefined;
+    }
+
+    return window.crcApp.onMboxImportComplete((result) => {
+      handleDesktopMboxImportComplete(result);
+    });
+  }, []);
+
 
   function resetProject() {
     if (!confirm('Reset this local project and remove imported records from this device?')) return;
@@ -592,6 +633,10 @@ function App() {
     }
 
     if (lower.endsWith('.mbox')) {
+      if (hasDesktopMboxPicker()) {
+        throw new Error('For Gmail Takeout .mbox files, use the “Choose .mbox file” button so the desktop app can read the file safely.');
+      }
+
       const text = await file.text();
       return mboxToRows(text, file.name);
     }
@@ -610,6 +655,88 @@ function App() {
 
     throw new Error('Unsupported file type. Use CSV, TXT, XLS, XLSX, MBOX, or EML for this MVP.');
   }
+
+  function handleDesktopMboxImportComplete(result) {
+    try {
+      if (result?.canceled) {
+        setImportProgress(null);
+        setLastMessage('Import canceled. No local records were changed.');
+        return;
+      }
+
+      if (!result?.ok) {
+        throw new Error(result?.error || 'The .mbox file could not be imported.');
+      }
+
+      const rows = Array.isArray(result.rows)
+        ? result.rows
+        : mboxToRows(result.text || '', result.fileName);
+      const totalRecoveredRows = result.stats?.recoveredRows ?? rows.length;
+      const previewRows = result.stats?.previewRows ?? rows.length;
+      const exportPath = result.exportPath || result.stats?.outputPath || '';
+      const { customers: imported } = buildCustomers(rows, result.fileName);
+
+      setCustomers((prev) => mergeCustomers(prev, imported));
+      setImportHistory((prev) => [
+        ...prev,
+        {
+          file: result.fileName,
+          rows: totalRecoveredRows,
+          customers: imported.length,
+          size: result.sizeLabel || '',
+          exportPath
+        }
+      ]);
+
+      setImportProgress(null);
+      setLastMessage(
+        `Import complete: ${result.fileName}. File size ${result.sizeLabel || 'unknown'}. Checked ${(result.stats?.messagesScanned || 0).toLocaleString()} message(s), saved ${totalRecoveredRows.toLocaleString()} unique email record(s) to CSV. Loaded ${previewRows.toLocaleString()} email preview row(s) into Review. Full export: ${exportPath || 'saved locally'}.`
+      );
+      setStatusFilter('Email Found');
+      setActiveTab('review');
+    } catch (error) {
+      setImportProgress(null);
+      setLastMessage(`Could not import .mbox file: ${error.message}`);
+    }
+  }
+
+  async function handleDesktopMboxImport() {
+    if (!hasDesktopMboxPicker()) {
+      setLastMessage('Desktop .mbox importer is not available in this runtime. Use CSV, XLSX, or the web fallback instead.');
+      return;
+    }
+
+    if (window.crcApp && typeof window.crcApp.startMboxImport === 'function') {
+      setImportProgress({
+        phase: 'selecting',
+        percent: 0,
+        messageCount: 0,
+        recoveredRows: 0,
+        message: 'Waiting for you to choose a Gmail Takeout .mbox file...'
+      });
+      setLastMessage('Choose the Gmail Takeout .mbox file from your computer. The file will be read locally only.');
+      window.crcApp.startMboxImport();
+      return;
+    }
+
+    try {
+      setImportProgress({
+        phase: 'selecting',
+        percent: 0,
+        messageCount: 0,
+        recoveredRows: 0,
+        message: 'Waiting for you to choose a Gmail Takeout .mbox file...'
+      });
+      setLastMessage('Choose the Gmail Takeout .mbox file from your computer. The file will be read locally only.');
+
+      const result = await window.crcApp.selectMboxFile();
+      handleDesktopMboxImportComplete(result);
+    } catch (error) {
+      setImportProgress(null);
+      setLastMessage(`Could not import .mbox file: ${error.message}`);
+    }
+  }
+
 
   async function handleFiles(files) {
     const list = Array.from(files || []);
@@ -785,10 +912,34 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">MVP v0.4 Client Recovery Build</p>
+            <p className="eyebrow">MVP v0.5 Client Recovery Build</p>
             <h2>{activeTab === 'home' ? 'Dashboard' : activeTab === 'import' ? 'Import Takeout' : activeTab === 'review' ? 'Review Records' : 'Export Files'}</h2>
           </div>
-          <div className="status-pill">{lastMessage}</div>
+          <div className="status-stack">
+            <div className="status-pill">{lastMessage}</div>
+            {importProgress && (
+              <div className="global-import-progress" role="status" aria-live="polite">
+                <div className="global-progress-top">
+                  <strong>Importing mailbox</strong>
+                  <span>{Math.min(100, Math.max(0, Number(importProgress.percent) || 0))}%</span>
+                </div>
+                <div className="global-progress-track" aria-label="Mailbox import progress">
+                  <div
+                    className="global-progress-fill"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, Number(importProgress.percent) || 0))}%`
+                    }}
+                  />
+                </div>
+                <div className="global-progress-meta">
+                  <span>{(importProgress.messageCount || 0).toLocaleString()} messages checked</span>
+                  <span>{(importProgress.recoveredRows || 0).toLocaleString()} emails found</span>
+                  {importProgress.heapUsedMb ? <span>{importProgress.heapUsedMb} MB memory</span> : null}
+                </div>
+                <small>{importProgress.message || 'Scanning mailbox locally. Keep this window open.'}</small>
+              </div>
+            )}
+          </div>
         </header>
 
         {activeTab === 'home' && (
@@ -823,7 +974,35 @@ function App() {
           <section className="content-card">
             <div className="section-heading">
               <h3>Import Google Takeout</h3>
-              <p>Drop the Gmail Takeout .mbox file here. The tool scans Etsy sale emails, extracts buyer emails when present, and captures Etsy links for review.</p>
+              <p>Choose the Gmail Takeout .mbox file from your computer. The tool scans Etsy sale emails, extracts buyer emails when present, and captures Etsy links for review.</p>
+            </div>
+
+            <div className="import-actions">
+              <button className="primary" type="button" onClick={handleDesktopMboxImport}>
+                Choose .mbox file
+              </button>
+              <p>Recommended for Gmail Takeout .mbox files. This uses the desktop-safe local importer instead of the browser file reader.</p>
+              {importProgress && (
+                <div className="import-progress">
+                  <div className="progress-header">
+                    <strong>{importProgress.percent ?? 0}% scanned</strong>
+                    <small>{(importProgress.recoveredRows || 0).toLocaleString()} emails found</small>
+                  </div>
+                  <div className="progress-track" aria-label="Mailbox import progress">
+                    <div
+                      className={`progress-fill ${(Number(importProgress.percent) || 0) <= 0 ? 'is-pending' : ''}`}
+                      style={{
+                        width: `${Math.min(100, Math.max(0, Number(importProgress.percent) || 0))}%`
+                      }}
+                    />
+                  </div>
+                  <span>{importProgress.message || 'Scanning mailbox locally...'}</span>
+                  <small>
+                    {(importProgress.messageCount || 0).toLocaleString()} messages checked
+                    {importProgress.outputPath ? ` · Saving CSV locally` : ''}
+                  </small>
+                </div>
+              )}
             </div>
 
             <label
@@ -838,14 +1017,14 @@ function App() {
             >
               <input type="file" multiple accept=".csv,.txt,.xlsx,.xls,.mbox,.eml" onChange={(event) => handleFiles(event.target.files)} />
               <span className="upload-icon">⇪</span>
-              <strong>Drop Gmail Takeout .mbox here or tap to choose</strong>
-              <small>Also supported: CSV, TXT, XLS, XLSX, EML</small>
+              <strong>Drop CSV, TXT, XLS, XLSX, or EML files here</strong>
+              <small>For Gmail Takeout .mbox files, use the Choose .mbox file button above.</small>
             </label>
 
             <div className="help-grid">
               <article>
                 <strong>Best file</strong>
-                <p>Gmail Takeout Mail .mbox. If Takeout gives you a .zip, unzip it first and drag the .mbox file here.</p>
+                <p>Gmail Takeout Mail .mbox. If Takeout gives you a .zip, unzip it first, then use the Choose .mbox file button above.</p>
               </article>
               <article>
                 <strong>Privacy posture</strong>
