@@ -770,7 +770,9 @@ function App() {
         }
       }
 
-      setCustomers((prev) => mergeCustomers(prev, imported));
+      setCustomers(imported);
+      setQuery('');
+      setStatusFilter('All');
       setImportHistory((prev) => [
         ...prev,
         {
@@ -788,7 +790,7 @@ function App() {
       ]);
 
       setImportProgress(null);
-      setLastMessage(`Import complete: ${result.fileName}. Saved ${totalRecoveredRows.toLocaleString()} recovered record(s). Review shows ${previewRows.toLocaleString()} preview row(s). Results folder: ${resultsDir || 'Customer Recovery Exports'}. Main CSV: ${exportPath || 'saved locally'}.`);
+      setLastMessage(`Import complete: ${result.fileName}. Saved ${totalRecoveredRows.toLocaleString()} recovered record(s). Loaded ${imported.length.toLocaleString()} records into Review preview. Results folder: ${resultsDir || 'selected save location'}. Main CSV: ${exportPath || 'saved locally'}.`);
       setStatusFilter('Email Found');
       setActiveTab('review');
     } catch (error) {
@@ -1265,7 +1267,7 @@ function App() {
               ))}
             </div>
             <div className="button-row">
-              <button className="primary export-selected-button" onClick={exportSelectedFiles}>Open / Reveal Selected Results</button>
+              <button className="primary export-selected-button" onClick={exportSelectedFiles}>Open Selected Result Files</button>
               <button className="secondary" onClick={() => setSelectedExports({
                 recoveredEmails: true,
                 etsyLinks: true,
