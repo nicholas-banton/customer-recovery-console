@@ -625,21 +625,34 @@ function App() {
 
   const stats = useMemo(() => {
     const totalSpend = customers.reduce((sum, c) => sum + c.totalSpend, 0);
+    const latestDesktopImport = [...importHistory].reverse().find((entry) => entry.exportPath) || null;
+    const fullRecoveredCount = latestDesktopImport?.rows ?? customers.length;
+    const previewRows = latestDesktopImport?.customers ?? customers.length;
+    const hasFullDesktopExport = Boolean(latestDesktopImport?.exportPath);
+
     return {
-      total: customers.length,
+      total: fullRecoveredCount,
+      previewRows,
+      fullRecoveredCount,
+      fullExportPath: latestDesktopImport?.exportPath || '',
+      latestResultsDir: latestDesktopImport?.resultsDir || '',
+      latestReadmePath: latestDesktopImport?.readmePath || '',
+      latestAuditPath: latestDesktopImport?.auditPath || '',
+      hasFullDesktopExport,
       marketing: customers.filter((c) => c.status === 'Marketing Eligible').length,
       review: customers.filter((c) => c.status === 'Needs Review').length,
       dnc: customers.filter((c) => c.status === 'Do Not Contact').length,
-      transactional: customers.filter((c) => c.status === 'Transactional Only').length,
+      transactional: hasFullDesktopExport ? fullRecoveredCount : customers.filter((c) => c.status === 'Transactional Only').length,
       duplicates: customers.reduce((sum, c) => sum + c.duplicates, 0),
-      etsySales: customers.filter((c) => c.isEtsySale).length,
+      etsySales: hasFullDesktopExport ? fullRecoveredCount : customers.filter((c) => c.isEtsySale).length,
       linkReview: customers.filter((c) => c.isEtsySale && (!c.email || c.linkReviewStatus === 'Link Review Needed')).length,
-      recoveredEmails: customers.filter((c) => c.isEtsySale && c.email).length,
+      recoveredEmails: hasFullDesktopExport ? fullRecoveredCount : customers.filter((c) => c.isEtsySale && c.email).length,
       missingEmails: customers.filter((c) => c.isEtsySale && !c.email).length,
       linksCaptured: customers.filter((c) => c.isEtsySale && c.etsyLinks).length,
+      auditReports: importHistory.length ? 1 : 0,
       totalSpend: totalSpend.toLocaleString(undefined, { style: 'currency', currency: 'USD' })
     };
-  }, [customers]);
+  }, [customers, importHistory]);
 
   const filtered = useMemo(() => {
     return customers.filter((customer) => {
@@ -693,7 +706,7 @@ function App() {
     throw new Error('Unsupported file type. Use CSV, TXT, XLS, XLSX, MBOX, or EML for this MVP.');
   }
 
-  function handleDesktopMboxImportComplete(result) {
+  async function handleDesktopMboxImportComplete(result) {
     try {
       if (result?.canceled) {
         setImportProgress(null);
@@ -710,7 +723,41 @@ function App() {
         : mboxToRows(result.text || '', result.fileName);
       const totalRecoveredRows = result.stats?.recoveredRows ?? rows.length;
       const previewRows = result.stats?.previewRows ?? rows.length;
-      const exportPath = result.exportPath || result.stats?.outputPath || '';
+      const rawExportPath = result.exportPath || result.stats?.outputPath || '';
+      let exportPath = rawExportPath;
+      let resultsDir = '';
+      let readmePath = '';
+      let auditPath = '';
+
+      if (
+        rawExportPath &&
+        window.crcApp &&
+        typeof window.crcApp.prepareResultsPackage === 'function'
+      ) {
+        try {
+          const packageResult = await window.crcApp.prepareResultsPackage({
+            sourcePath: rawExportPath,
+            recordCount: totalRecoveredRows,
+            messagesScanned: result.stats?.messagesScanned || 0,
+            previewRows,
+            fileName: result.fileName
+          });
+
+          if (packageResult?.ok) {
+            exportPath = packageResult.recoveredCsvPath || rawExportPath;
+            resultsDir = packageResult.resultsDir || '';
+            readmePath = packageResult.readmePath || '';
+            auditPath = packageResult.auditPath || '';
+
+            if (typeof window.crcApp.openResultsFolder === 'function') {
+              window.crcApp.openResultsFolder(resultsDir);
+            }
+          }
+        } catch (packageError) {
+          console.error('Could not prepare simplified results folder:', packageError);
+        }
+      }
+
       const { customers: imported } = buildCustomers(rows, result.fileName);
 
       setCustomers((prev) => mergeCustomers(prev, imported));
@@ -721,14 +768,16 @@ function App() {
           rows: totalRecoveredRows,
           customers: imported.length,
           size: result.sizeLabel || '',
-          exportPath
+          exportPath,
+          rawExportPath,
+          resultsDir,
+          readmePath,
+          auditPath
         }
       ]);
 
       setImportProgress(null);
-      setLastMessage(
-        `Import complete: ${result.fileName}. File size ${result.sizeLabel || 'unknown'}. Checked ${(result.stats?.messagesScanned || 0).toLocaleString()} message(s), saved ${totalRecoveredRows.toLocaleString()} unique email record(s) to CSV. Loaded ${previewRows.toLocaleString()} email preview row(s) into Review. Full export: ${exportPath || 'saved locally'}.`
-      );
+      setLastMessage(`Import complete: ${result.fileName}. Saved ${totalRecoveredRows.toLocaleString()} recovered record(s). Review shows ${previewRows.toLocaleString()} preview row(s). Results folder: ${resultsDir || 'Customer Recovery Exports'}. Main CSV: ${exportPath || 'saved locally'}.`);
       setStatusFilter('Email Found');
       setActiveTab('review');
     } catch (error) {
@@ -805,108 +854,112 @@ function App() {
     setCustomers((prev) => prev.map((customer) => customer.id === id ? { ...customer, ...updates } : customer));
   }
 
-  function exportCsv(type, silent = false) {
+  async function exportCsv(type, silent = false) {
+    if (type === 'recovered-emails' && stats.hasFullDesktopExport) {
+      const filename = `etsy-recovered-emails-full-${stats.fullRecoveredCount}-records.csv`;
+
+      if (window.crcApp && typeof window.crcApp.copyFullExportFile === 'function') {
+        try {
+          const result = await window.crcApp.copyFullExportFile({
+            sourcePath: stats.fullExportPath,
+            filename,
+            count: stats.fullRecoveredCount
+          });
+
+          if (!silent) {
+            setLastMessage(`Exported full Recovered Etsy Emails CSV with ${stats.fullRecoveredCount.toLocaleString()} records: ${result.path}`);
+          }
+
+          return {
+            filename: result.path,
+            count: stats.fullRecoveredCount,
+            copied: true
+          };
+        } catch (error) {
+          if (!silent) {
+            setLastMessage(`Could not export full Recovered Etsy Emails CSV: ${error.message}`);
+          }
+
+          return {
+            filename: stats.fullExportPath,
+            count: stats.fullRecoveredCount,
+            error: error.message
+          };
+        }
+      }
+
+      if (!silent) {
+        setLastMessage(`Full Recovered Etsy Emails CSV already exists with ${stats.fullRecoveredCount.toLocaleString()} records: ${stats.fullExportPath}`);
+      }
+
+      return {
+        filename: stats.fullExportPath,
+        count: stats.fullRecoveredCount,
+        existing: true
+      };
+    }
+
     let rows = customers;
-    let filename = 'customer-recovery-full.csv';
-    if (type === 'marketing') {
-      rows = customers.filter((c) => c.status === 'Marketing Eligible');
-      filename = 'marketing-eligible-customers.csv';
-    }
-    if (type === 'transactional') {
-      rows = customers.filter((c) => c.status === 'Transactional Only');
-      filename = 'transactional-support-customers.csv';
-    }
-    if (type === 'dnc') {
-      rows = customers.filter((c) => c.status === 'Do Not Contact');
-      filename = 'do-not-contact-list.csv';
-    }
-    if (type === 'etsy-links') {
+    let filename = 'customer-recovery-preview.csv';
+
+    if (type === 'etsy-links-preview') {
       rows = customers.filter((c) => c.isEtsySale && c.etsyLinks);
-      filename = 'etsy-link-review-queue.csv';
+      filename = 'etsy-link-review-preview-500-row-sample.csv';
     }
+
     if (type === 'recovered-emails') {
       rows = customers.filter((c) => c.isEtsySale && c.email);
-      filename = 'etsy-recovered-emails.csv';
+      filename = 'etsy-recovered-emails-preview-only.csv';
     }
-    if (type === 'missing-email') {
-      rows = customers.filter((c) => c.isEtsySale && !c.email);
-      filename = 'etsy-missing-email-review.csv';
-    }
+
     downloadText(filename, customersToCsv(rows), 'text/csv');
-    if (!silent) setLastMessage(`Exported ${filename} with ${rows.length} record(s).`);
+
+    if (!silent) {
+      setLastMessage(`Exported ${filename} with ${rows.length.toLocaleString()} preview record(s).`);
+    }
+
     return { filename, count: rows.length };
   }
+
 
   function exportAudit(silent = false) {
     downloadText('customer-recovery-audit-report.md', auditMarkdown(customers, importHistory), 'text/markdown');
     if (!silent) setLastMessage('Exported customer-recovery-audit-report.md.');
-    return { filename: 'customer-recovery-audit-report.md', count: customers.length };
+    return { filename: 'customer-recovery-audit-report.md', count: stats.auditReports };
   }
 
   const exportOptions = [
     {
       key: 'recoveredEmails',
       label: 'Recovered Etsy Emails',
-      detail: 'Buyer emails found in Etsy sale messages.',
+      detail: stats.hasFullDesktopExport
+        ? `Full client CSV. Exports all ${stats.fullRecoveredCount.toLocaleString()} recovered records, not just the 500-row preview.`
+        : 'Buyer emails found in Etsy sale messages.',
       count: stats.recoveredEmails,
       action: (silent) => exportCsv('recovered-emails', silent)
     },
     {
       key: 'etsyLinks',
-      label: 'Etsy Link Review Queue',
-      detail: 'Captured Etsy order/buyer links for review.',
+      label: 'Etsy Link Review Preview',
+      detail: 'Optional QA file only. This count comes from the 500-row Review preview, not the full dataset.',
       count: stats.linksCaptured,
-      action: (silent) => exportCsv('etsy-links', silent)
-    },
-    {
-      key: 'missingEmail',
-      label: 'Missing Email Review',
-      detail: 'Etsy records where no buyer email was found.',
-      count: stats.missingEmails,
-      action: (silent) => exportCsv('missing-email', silent)
+      action: (silent) => exportCsv('etsy-links-preview', silent)
     },
     {
       key: 'audit',
       label: 'Audit Report',
-      detail: 'Markdown summary of imports, counts, and safety notes.',
-      count: customers.length,
+      detail: 'One markdown summary of import counts, preview limits, and safety notes.',
+      count: stats.auditReports || 1,
       action: (silent) => exportAudit(silent)
-    },
-    {
-      key: 'dnc',
-      label: 'Do-Not-Contact List',
-      detail: 'Suppressed or excluded records.',
-      count: stats.dnc,
-      action: (silent) => exportCsv('dnc', silent)
-    },
-    {
-      key: 'transactional',
-      label: 'Transactional / Support List',
-      detail: 'Records limited to order, admin, or support use.',
-      count: stats.transactional,
-      action: (silent) => exportCsv('transactional', silent)
-    },
-    {
-      key: 'marketing',
-      label: 'Marketing Eligible Only',
-      detail: 'Only records manually marked as consent-confirmed.',
-      count: stats.marketing,
-      action: (silent) => exportCsv('marketing', silent)
-    },
-    {
-      key: 'full',
-      label: 'Full Clean CSV',
-      detail: 'All deduped recovery records.',
-      count: stats.total,
-      action: (silent) => exportCsv('full', silent)
     }
   ];
+
 
   function toggleExportOption(key) {
     setSelectedExports((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
-  function exportSelectedFiles() {
+  async function exportSelectedFiles() {
     const selected = exportOptions.filter((option) => selectedExports[option.key]);
 
     if (!selected.length) {
@@ -914,9 +967,27 @@ function App() {
       return;
     }
 
-    selected.forEach((option) => option.action(true));
-    setLastMessage(`Exported ${selected.length} selected file(s): ${selected.map((option) => option.label).join(', ')}.`);
+    const results = await Promise.all(
+      selected.map(async (option) => ({
+        option,
+        result: await option.action(true)
+      }))
+    );
+
+    const errors = results.filter((item) => item.result?.error);
+    if (errors.length) {
+      setLastMessage(`Some exports could not be completed: ${errors.map((item) => `${item.option.label}: ${item.result.error}`).join(' | ')}`);
+      return;
+    }
+
+    const summary = results
+      .filter((item) => item.result)
+      .map((item) => `${item.option.label}: ${Number(item.result.count || 0).toLocaleString()} record(s) → ${item.result.filename}`)
+      .join(' | ');
+
+    setLastMessage(`Export complete. ${summary}`);
   }
+
 
   return (
     <div className="app-shell">
@@ -1150,7 +1221,7 @@ function App() {
           <section className="content-card">
             <div className="section-heading">
               <h3>Export recovery package</h3>
-              <p>Select one or more files, then export them together for client handoff.</p>
+              <p>Main recovery files are saved automatically in Downloads → Etsy Email Recovery Results.</p>
             </div>
             <div className="export-options">
               {exportOptions.map((option) => (
@@ -1165,7 +1236,7 @@ function App() {
               ))}
             </div>
             <div className="button-row">
-              <button className="primary export-selected-button" onClick={exportSelectedFiles}>Export Selected Files</button>
+              <button className="primary export-selected-button" onClick={exportSelectedFiles}>Open / Reveal Selected Results</button>
               <button className="secondary" onClick={() => setSelectedExports({
                 recoveredEmails: true,
                 etsyLinks: true,

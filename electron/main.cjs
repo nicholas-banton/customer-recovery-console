@@ -1,3 +1,6 @@
+const crcFsPromises = require('fs/promises');
+const crcPath = require('path');
+
 const { app, BrowserWindow, shell, protocol, dialog, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -11,7 +14,11 @@ const distDir = path.join(__dirname, '..', 'dist');
 // The app no longer limits total .mbox size. It processes one email message at a time.
 // Per-message truncation protects the app from enormous attachment-heavy messages.
 const MAX_MESSAGE_CHARS = Number(process.env.CRC_MAX_MESSAGE_CHARS || 512 * 1024);
-const MAX_RECOVERY_ROWS = Number(process.env.CRC_MAX_RECOVERY_ROWS || 20000);
+const rawRecoveryRowLimit = process.env.CRC_MAX_RECOVERY_ROWS;
+const parsedRecoveryRowLimit = Number(rawRecoveryRowLimit);
+const MAX_RECOVERY_ROWS = Number.isFinite(parsedRecoveryRowLimit) && parsedRecoveryRowLimit > 0
+  ? parsedRecoveryRowLimit
+  : null;
 const PROGRESS_INTERVAL_BYTES = Number(process.env.CRC_PROGRESS_INTERVAL_BYTES || 5 * 1024 * 1024);
 const MAX_EMAILS_PER_MESSAGE = Number(process.env.CRC_MAX_EMAILS_PER_MESSAGE || 5);
 const MAX_PREVIEW_ROWS = Number(process.env.CRC_MAX_PREVIEW_ROWS || 500);
@@ -679,7 +686,7 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
 
       seenEmailKeys.add(email);
 
-      if (recoveredRowCount >= MAX_RECOVERY_ROWS) {
+      if (MAX_RECOVERY_ROWS && recoveredRowCount >= MAX_RECOVERY_ROWS) {
         rowLimitHit = true;
         return;
       }
@@ -688,7 +695,7 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
       recoveredRowCount += 1;
       maybeStorePreview(row);
 
-      if (recoveredRowCount >= MAX_RECOVERY_ROWS) {
+      if (MAX_RECOVERY_ROWS && recoveredRowCount >= MAX_RECOVERY_ROWS) {
         rowLimitHit = true;
       }
     }
@@ -994,7 +1001,161 @@ function buildMboxOpenDialogOptions() {
 }
 
 function registerImportHandlers() {
-  ipcMain.handle('crc:select-mbox-file', async (event) => {
+  
+ipcMain.handle('crc:copy-full-export-file', async (_event, payload = {}) => {
+  const sourcePath = String(payload.sourcePath || '').trim();
+  const requestedName = String(payload.filename || 'customer-recovery-full-export.csv').trim();
+  const count = payload.count || null;
+
+  if (!sourcePath) {
+    throw new Error('No source CSV path was provided for the full export copy.');
+  }
+
+  const sourceStats = await crcFsPromises.stat(sourcePath);
+  if (!sourceStats.isFile()) {
+    throw new Error(`Full export source is not a file: ${sourcePath}`);
+  }
+
+  const exportDir = crcPath.join(app.getPath('desktop'), 'Customer Recovery Exports');
+  await crcFsPromises.mkdir(exportDir, { recursive: true });
+
+  let safeName = requestedName
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 160);
+
+  if (!safeName.toLowerCase().endsWith('.csv')) {
+    safeName += '.csv';
+  }
+
+  let destinationPath = crcPath.join(exportDir, safeName);
+
+  if (crcPath.resolve(destinationPath) === crcPath.resolve(sourcePath)) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    destinationPath = crcPath.join(exportDir, safeName.replace(/\.csv$/i, `-${stamp}.csv`));
+  } else {
+    try {
+      await crcFsPromises.access(destinationPath);
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      destinationPath = crcPath.join(exportDir, safeName.replace(/\.csv$/i, `-${stamp}.csv`));
+    } catch (_error) {
+      // Destination does not exist yet. Safe to use.
+    }
+  }
+
+  await crcFsPromises.copyFile(sourcePath, destinationPath);
+
+  return {
+    ok: true,
+    path: destinationPath,
+    count,
+    sourcePath
+  };
+});
+
+
+
+function crcResultsDir() {
+  return crcPath.join(app.getPath('downloads'), 'Etsy Email Recovery Results');
+}
+
+function crcSafeCsvName(recordCount) {
+  const countLabel = Number(recordCount || 0) > 0 ? Number(recordCount).toLocaleString('en-US').replace(/,/g, '') : 'full';
+  return `Recovered-Etsy-Emails-${countLabel}-records.csv`;
+}
+
+ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
+  const sourcePath = String(payload.sourcePath || '').trim();
+  const recordCount = Number(payload.recordCount || payload.count || 0);
+  const messagesScanned = Number(payload.messagesScanned || 0);
+  const previewRows = Number(payload.previewRows || 0);
+
+  if (!sourcePath) {
+    throw new Error('No recovered CSV path was provided.');
+  }
+
+  const sourceStats = await crcFsPromises.stat(sourcePath);
+  if (!sourceStats.isFile()) {
+    throw new Error(`Recovered CSV source is not a file: ${sourcePath}`);
+  }
+
+  const resultsDir = crcResultsDir();
+  await crcFsPromises.mkdir(resultsDir, { recursive: true });
+
+  const recoveredCsvName = crcSafeCsvName(recordCount);
+  const recoveredCsvPath = crcPath.join(resultsDir, recoveredCsvName);
+
+  await crcFsPromises.copyFile(sourcePath, recoveredCsvPath);
+
+  const readmePath = crcPath.join(resultsDir, 'READ-ME.txt');
+  const readme = [
+    'Etsy Email Recovery Results',
+    '',
+    `Recovered email records: ${recordCount.toLocaleString()}`,
+    `Messages scanned: ${messagesScanned.toLocaleString()}`,
+    `Preview rows shown in app: ${previewRows.toLocaleString()}`,
+    '',
+    'Main file:',
+    recoveredCsvName,
+    '',
+    'Notes:',
+    '- The CSV file is the complete recovered record set.',
+    '- The app may show only 500 preview rows for performance.',
+    '- Use the CSV file in this folder for the client handoff.',
+    '- Marketing consent is not automatically confirmed by this recovery tool.',
+    '',
+    `Original source export: ${sourcePath}`,
+    `Generated: ${new Date().toISOString()}`,
+    ''
+  ].join('\n');
+
+  await crcFsPromises.writeFile(readmePath, readme, 'utf8');
+
+  const auditPath = crcPath.join(resultsDir, 'Recovery-Audit-Summary.txt');
+  const audit = [
+    'Recovery Audit Summary',
+    '',
+    `Recovered records: ${recordCount.toLocaleString()}`,
+    `Messages scanned: ${messagesScanned.toLocaleString()}`,
+    `Preview rows shown in app: ${previewRows.toLocaleString()}`,
+    `Recovered CSV: ${recoveredCsvPath}`,
+    `Generated: ${new Date().toISOString()}`,
+    ''
+  ].join('\n');
+
+  await crcFsPromises.writeFile(auditPath, audit, 'utf8');
+
+  return {
+    ok: true,
+    resultsDir,
+    recoveredCsvPath,
+    readmePath,
+    auditPath,
+    recordCount,
+    messagesScanned,
+    previewRows
+  };
+});
+
+ipcMain.handle('crc:open-results-folder', async (_event, folderPath = '') => {
+  const target = String(folderPath || crcResultsDir()).trim();
+  await crcFsPromises.mkdir(target, { recursive: true });
+  return shell.openPath(target);
+});
+
+ipcMain.handle('crc:reveal-path', async (_event, targetPath = '') => {
+  const target = String(targetPath || '').trim();
+  if (!target) {
+    throw new Error('No file path was provided.');
+  }
+  shell.showItemInFolder(target);
+  return { ok: true, path: target };
+});
+
+
+ipcMain.handle('crc:select-mbox-file', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender);
 
     const result = await dialog.showOpenDialog(parentWindow, buildMboxOpenDialogOptions());
