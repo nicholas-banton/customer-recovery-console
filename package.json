@@ -1,6 +1,6 @@
 {
   "name": "customer-recovery-console",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Local advanced email recovery tool for authorized mailbox exports.",
   "main": "electron/main.cjs",
@@ -36,7 +36,7 @@
   "build": {
     "appId": "com.customerrecovery.console",
     "productName": "Advanced Email Recovery Tool",
-    "copyright": "Copyright \u00a9 2026 Advanced Email Recovery Tool",
+    "copyright": "Copyright © 2026 Advanced Email Recovery Tool",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "directories": {
