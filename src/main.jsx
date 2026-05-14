@@ -638,6 +638,7 @@ function App() {
       latestResultsDir: latestDesktopImport?.resultsDir || '',
       latestReadmePath: latestDesktopImport?.readmePath || '',
       latestAuditPath: latestDesktopImport?.auditPath || '',
+      latestLinkPreviewPath: latestDesktopImport?.linkPreviewPath || '',
       hasFullDesktopExport,
       marketing: customers.filter((c) => c.status === 'Marketing Eligible').length,
       review: customers.filter((c) => c.status === 'Needs Review').length,
@@ -724,10 +725,16 @@ function App() {
       const totalRecoveredRows = result.stats?.recoveredRows ?? rows.length;
       const previewRows = result.stats?.previewRows ?? rows.length;
       const rawExportPath = result.exportPath || result.stats?.outputPath || '';
+      const { customers: imported } = buildCustomers(rows, result.fileName);
+
+      const etsyLinkPreviewRows = imported.filter((customer) => customer.isEtsySale && customer.etsyLinks);
+      const etsyLinkPreviewCsv = customersToCsv(etsyLinkPreviewRows);
+
       let exportPath = rawExportPath;
       let resultsDir = '';
       let readmePath = '';
       let auditPath = '';
+      let linkPreviewPath = '';
 
       if (
         rawExportPath &&
@@ -740,6 +747,8 @@ function App() {
             recordCount: totalRecoveredRows,
             messagesScanned: result.stats?.messagesScanned || 0,
             previewRows,
+            linkPreviewCsv: etsyLinkPreviewCsv,
+            linkPreviewCount: etsyLinkPreviewRows.length,
             fileName: result.fileName
           });
 
@@ -748,17 +757,18 @@ function App() {
             resultsDir = packageResult.resultsDir || '';
             readmePath = packageResult.readmePath || '';
             auditPath = packageResult.auditPath || '';
+            linkPreviewPath = packageResult.linkPreviewPath || '';
 
             if (typeof window.crcApp.openResultsFolder === 'function') {
               window.crcApp.openResultsFolder(resultsDir);
             }
+          } else if (packageResult?.canceled) {
+            setLastMessage('Recovery completed, but no save folder was selected. Choose Export again to save the result files.');
           }
         } catch (packageError) {
-          console.error('Could not prepare simplified results folder:', packageError);
+          console.error('Could not prepare selected results folder:', packageError);
         }
       }
-
-      const { customers: imported } = buildCustomers(rows, result.fileName);
 
       setCustomers((prev) => mergeCustomers(prev, imported));
       setImportHistory((prev) => [
@@ -772,7 +782,8 @@ function App() {
           rawExportPath,
           resultsDir,
           readmePath,
-          auditPath
+          auditPath,
+          linkPreviewPath
         }
       ]);
 
@@ -903,6 +914,24 @@ function App() {
     let filename = 'customer-recovery-preview.csv';
 
     if (type === 'etsy-links-preview') {
+      if (stats.latestLinkPreviewPath && window.crcApp && typeof window.crcApp.revealPath === 'function') {
+        try {
+          await window.crcApp.revealPath(stats.latestLinkPreviewPath);
+        } catch (error) {
+          console.error('Could not reveal Etsy Link Review Preview:', error);
+        }
+
+        if (!silent) {
+          setLastMessage(`Etsy Link Review Preview is ready: ${stats.latestLinkPreviewPath}`);
+        }
+
+        return {
+          filename: stats.latestLinkPreviewPath,
+          count: stats.linksCaptured,
+          existing: true
+        };
+      }
+
       rows = customers.filter((c) => c.isEtsySale && c.etsyLinks);
       filename = 'etsy-link-review-preview-500-row-sample.csv';
     }
@@ -1221,7 +1250,7 @@ function App() {
           <section className="content-card">
             <div className="section-heading">
               <h3>Export recovery package</h3>
-              <p>Main recovery files are saved automatically in Downloads → Etsy Email Recovery Results.</p>
+              <p>When recovery finishes, choose where to save the Etsy Email Recovery Results folder.</p>
             </div>
             <div className="export-options">
               {exportOptions.map((option) => (

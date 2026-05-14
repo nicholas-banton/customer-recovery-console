@@ -1057,13 +1057,35 @@ ipcMain.handle('crc:copy-full-export-file', async (_event, payload = {}) => {
 
 
 
-function crcResultsDir() {
-  return crcPath.join(app.getPath('downloads'), 'Etsy Email Recovery Results');
-}
+
 
 function crcSafeCsvName(recordCount) {
   const countLabel = Number(recordCount || 0) > 0 ? Number(recordCount).toLocaleString('en-US').replace(/,/g, '') : 'full';
   return `Recovered-Etsy-Emails-${countLabel}-records.csv`;
+}
+
+
+
+
+function crcSafeCsvName(recordCount) {
+  const countLabel = Number(recordCount || 0) > 0
+    ? Number(recordCount).toLocaleString('en-US').replace(/,/g, '')
+    : 'full';
+  return `Recovered-Etsy-Emails-${countLabel}-records.csv`;
+}
+
+async function crcChooseResultsDir() {
+  const result = await dialog.showOpenDialog({
+    title: 'Choose where to save Etsy Email Recovery Results',
+    buttonLabel: 'Save Results Here',
+    properties: ['openDirectory', 'createDirectory']
+  });
+
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+    return null;
+  }
+
+  return crcPath.join(result.filePaths[0], 'Etsy Email Recovery Results');
 }
 
 ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
@@ -1071,6 +1093,8 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
   const recordCount = Number(payload.recordCount || payload.count || 0);
   const messagesScanned = Number(payload.messagesScanned || 0);
   const previewRows = Number(payload.previewRows || 0);
+  const linkPreviewCsv = String(payload.linkPreviewCsv || '');
+  const linkPreviewCount = Number(payload.linkPreviewCount || 0);
 
   if (!sourcePath) {
     throw new Error('No recovered CSV path was provided.');
@@ -1081,13 +1105,28 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
     throw new Error(`Recovered CSV source is not a file: ${sourcePath}`);
   }
 
-  const resultsDir = crcResultsDir();
+  const resultsDir = await crcChooseResultsDir();
+
+  if (!resultsDir) {
+    return {
+      ok: false,
+      canceled: true,
+      message: 'No save folder was selected.'
+    };
+  }
+
   await crcFsPromises.mkdir(resultsDir, { recursive: true });
 
   const recoveredCsvName = crcSafeCsvName(recordCount);
   const recoveredCsvPath = crcPath.join(resultsDir, recoveredCsvName);
-
   await crcFsPromises.copyFile(sourcePath, recoveredCsvPath);
+
+  let linkPreviewPath = '';
+  if (linkPreviewCsv) {
+    const linkPreviewName = `Etsy-Link-Review-Preview-${linkPreviewCount}-records.csv`;
+    linkPreviewPath = crcPath.join(resultsDir, linkPreviewName);
+    await crcFsPromises.writeFile(linkPreviewPath, linkPreviewCsv, 'utf8');
+  }
 
   const readmePath = crcPath.join(resultsDir, 'READ-ME.txt');
   const readme = [
@@ -1100,13 +1139,13 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
     'Main file:',
     recoveredCsvName,
     '',
+    linkPreviewPath ? `Optional preview file:\n${crcPath.basename(linkPreviewPath)}\n` : '',
     'Notes:',
-    '- The CSV file is the complete recovered record set.',
+    '- The recovered CSV is the complete recovered record set.',
     '- The app may show only 500 preview rows for performance.',
-    '- Use the CSV file in this folder for the client handoff.',
+    '- The Etsy Link Review Preview is a QA preview from visible preview rows, not a full-dataset count.',
     '- Marketing consent is not automatically confirmed by this recovery tool.',
     '',
-    `Original source export: ${sourcePath}`,
     `Generated: ${new Date().toISOString()}`,
     ''
   ].join('\n');
@@ -1120,7 +1159,9 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
     `Recovered records: ${recordCount.toLocaleString()}`,
     `Messages scanned: ${messagesScanned.toLocaleString()}`,
     `Preview rows shown in app: ${previewRows.toLocaleString()}`,
+    `Etsy link review preview records: ${linkPreviewCount.toLocaleString()}`,
     `Recovered CSV: ${recoveredCsvPath}`,
+    linkPreviewPath ? `Etsy Link Review Preview: ${linkPreviewPath}` : '',
     `Generated: ${new Date().toISOString()}`,
     ''
   ].join('\n');
@@ -1131,17 +1172,21 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
     ok: true,
     resultsDir,
     recoveredCsvPath,
+    linkPreviewPath,
     readmePath,
     auditPath,
     recordCount,
     messagesScanned,
-    previewRows
+    previewRows,
+    linkPreviewCount
   };
 });
 
 ipcMain.handle('crc:open-results-folder', async (_event, folderPath = '') => {
-  const target = String(folderPath || crcResultsDir()).trim();
-  await crcFsPromises.mkdir(target, { recursive: true });
+  const target = String(folderPath || '').trim();
+  if (!target) {
+    throw new Error('No results folder path was provided.');
+  }
   return shell.openPath(target);
 });
 
