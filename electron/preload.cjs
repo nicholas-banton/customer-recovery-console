@@ -6,14 +6,14 @@ contextBridge.exposeInMainWorld('crcApp', {
   runtime: 'electron',
 
   // Legacy invoke path retained as fallback.
-  selectMboxFile: () => ipcRenderer.invoke('crc:select-mbox-file'),
+  selectMboxFile: (options = {}) => ipcRenderer.invoke('crc:select-mbox-file', options),
   prepareResultsPackage: (payload) => ipcRenderer.invoke('crc:prepare-results-package', payload),
   openResultsFolder: (folderPath) => ipcRenderer.invoke('crc:open-results-folder', folderPath),
   revealPath: (targetPath) => ipcRenderer.invoke('crc:reveal-path', targetPath),
   copyFullExportFile: (payload) => ipcRenderer.invoke('crc:copy-full-export-file', payload),
 
   // Event-driven long-running import path.
-  startMboxImport: () => ipcRenderer.send('crc:start-mbox-import'),
+  startMboxImport: (options = {}) => ipcRenderer.send('crc:start-mbox-import', options),
 
   onMboxImportProgress: (callback) => {
     if (typeof callback !== 'function') {

@@ -21,6 +21,7 @@ const MAX_RECOVERY_ROWS = Number.isFinite(parsedRecoveryRowLimit) && parsedRecov
   : null;
 const PROGRESS_INTERVAL_BYTES = Number(process.env.CRC_PROGRESS_INTERVAL_BYTES || 5 * 1024 * 1024);
 const MAX_EMAILS_PER_MESSAGE = Number(process.env.CRC_MAX_EMAILS_PER_MESSAGE || 5);
+const MAX_ADVANCED_EMAILS_PER_MESSAGE = Number(process.env.CRC_MAX_ADVANCED_EMAILS_PER_MESSAGE || 20);
 const MAX_PREVIEW_ROWS = Number(process.env.CRC_MAX_PREVIEW_ROWS || 500);
 
 const MIME_TYPES = {
@@ -74,7 +75,13 @@ const RECOVERY_COLUMNS = [
   'Raw Source File',
   'Etsy Link',
   'Etsy Recovery Status',
-  'Review Status'
+  'Review Status',
+  'Matched Term',
+  'Match Field',
+  'Match Snippet',
+  'Message From',
+  'Reply-To',
+  'Message Date'
 ];
 
 function csvEscape(value) {
@@ -546,7 +553,441 @@ function rowsFromMboxMessage(message, messageIndex, fileName) {
   ];
 }
 
-async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
+function normalizeScanOptions(options = {}) {
+  const rawMode = String(options.scanMode || options.mode || 'standard-etsy').trim();
+  const mode = rawMode === 'advanced-mailbox' ? 'advanced-mailbox' : 'standard-etsy';
+
+  const rawAdvanced = options.advancedSearch || {};
+  const rawTerms = Array.isArray(rawAdvanced.terms)
+    ? rawAdvanced.terms
+    : String(rawAdvanced.terms || options.searchTerms || '')
+        .split(',')
+        .map((term) => term.trim());
+
+  const terms = Array.from(new Set(
+    rawTerms
+      .map((term) => cleanText(term).toLowerCase())
+      .filter((term) => term.length >= 2)
+      .slice(0, 50)
+  ));
+
+  const rawMatchMode = String(rawAdvanced.matchMode || options.matchMode || 'any').trim();
+  const matchMode = ['any', 'all', 'exact'].includes(rawMatchMode) ? rawMatchMode : 'any';
+
+  return {
+    mode,
+    advancedSearch: {
+      terms,
+      matchMode,
+      includeHeaders: rawAdvanced.includeHeaders !== false,
+      includeBody: rawAdvanced.includeBody !== false
+    }
+  };
+}
+
+function stripHtmlForSearch(value) {
+  return decodeQuotedPrintableFragments(String(value || ''))
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function advancedSearchText(message, headers, bodyText, options) {
+  const parts = [];
+
+  if (options.advancedSearch.includeHeaders) {
+    parts.push(
+      headers.from,
+      headers.to,
+      headers.cc,
+      headers.bcc,
+      headers['reply-to'],
+      headers.subject,
+      headers.date
+    );
+  }
+
+  if (options.advancedSearch.includeBody) {
+    parts.push(bodyText);
+  }
+
+  return stripHtmlForSearch(parts.filter(Boolean).join(' ')).toLowerCase();
+}
+
+function getMatchedAdvancedTerms(searchText, options) {
+  const terms = options.advancedSearch.terms || [];
+  if (!terms.length) return [];
+
+  return terms.filter((term) => searchText.includes(term.toLowerCase()));
+}
+
+function advancedMessageMatches(searchText, options) {
+  const terms = options.advancedSearch.terms || [];
+  if (!terms.length) return false;
+
+  if (options.advancedSearch.matchMode === 'all') {
+    return terms.every((term) => searchText.includes(term.toLowerCase()));
+  }
+
+  if (options.advancedSearch.matchMode === 'exact') {
+    return terms.some((term) => searchText.includes(term.toLowerCase()));
+  }
+
+  return terms.some((term) => searchText.includes(term.toLowerCase()));
+}
+
+function extractAllLikelyEmailsFromMessage(message, headers = {}) {
+  const headerText = [
+    headers.from,
+    headers.to,
+    headers.cc,
+    headers.bcc,
+    headers['reply-to'],
+    headers.sender
+  ].filter(Boolean).join(' ');
+
+  const raw = `${headerText}\n${message || ''}`;
+  const emails = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+
+  return filterLikelyBuyerEmails(emails);
+}
+
+function buildAdvancedSearchRow({ email, messageIndex, headers, message, fileName, matchedTerms, matchMode }) {
+  const messageSample = String(message || '').slice(0, MAX_MESSAGE_CHARS);
+  const matchedLabel = matchedTerms.length ? matchedTerms.join(' | ') : 'Advanced search match';
+
+  return {
+    'Customer Name': clipText(email ? nameFromEmail(email) : 'Search Match', 120),
+    'Customer Email': clipText(email || '', 160),
+    'Order ID': `MSG-${messageIndex}`,
+    'Order Date': clipText(headers.date || '', 120),
+    'Order Total': '',
+    'Marketing Consent': 'Unknown',
+    'Source Type': 'Advanced Full-Mailbox Search',
+    'Subject': clipText(headers.subject || '', 220),
+    'Raw Source File': clipText(fileName, 180),
+    'Etsy Link': clipText(extractEtsyLink(messageSample), 500),
+    'Etsy Recovery Status': clipText(`Matched: ${matchedLabel}`, 220),
+    'Review Status': clipText(`Search match (${matchMode})`, 120)
+  };
+}
+
+
+function isAdvancedInfrastructureEmailV2(email) {
+  const lower = String(email || '').trim().toLowerCase();
+  const [local = '', domain = ''] = lower.split('@');
+
+  if (!local || !domain) return true;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(lower)) return true;
+  if (isAssetLikeEmail(lower)) return true;
+
+  const blockedDomains = [
+    'etsy.com',
+    'mailjet.com',
+    'amazonses.com',
+    'email.amazonses.com',
+    'localdomain',
+    'localhost'
+  ];
+
+  if (blockedDomains.some((blocked) => domain === blocked || domain.endsWith(`.${blocked}`))) {
+    return true;
+  }
+
+  const blockedDomainFragments = [
+    'bnc3',
+    'bounce',
+    'bounces',
+    'return',
+    'mailer',
+    'mailgun',
+    'sendgrid',
+    'mandrill',
+    'sparkpost',
+    'internal',
+    'etsy-web-prod',
+    'dsworker',
+    'payworker'
+  ];
+
+  if (blockedDomainFragments.some((fragment) => domain.includes(fragment))) return true;
+
+  const blockedLocalFragments = [
+    'no-reply',
+    'noreply',
+    'do-not-reply',
+    'donotreply',
+    'notification',
+    'notifications',
+    'transaction',
+    'receipt',
+    'support',
+    'help',
+    'mailer-daemon',
+    'postmaster',
+    'bounce',
+    'bounces',
+    'unsubscribe',
+    'mailjet',
+    'amazonses',
+    'etsy'
+  ];
+
+  if (blockedLocalFragments.some((fragment) => local.includes(fragment))) return true;
+
+  return false;
+}
+
+function filterAdvancedHumanEmailsV2(emails) {
+  return unique(emails.map((email) => String(email || '').trim().toLowerCase()))
+    .filter((email) => !isAdvancedInfrastructureEmailV2(email));
+}
+
+function emailsFromTextV2(value) {
+  return String(value || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+}
+
+function advancedMatchSnippetV2(text, terms, max = 300) {
+  const clean = stripHtmlForSearch(text);
+  const lower = clean.toLowerCase();
+  const term = (terms || []).find((item) => lower.includes(String(item || '').toLowerCase())) || '';
+  const index = term ? lower.indexOf(term.toLowerCase()) : 0;
+  const start = Math.max(0, index - Math.floor(max / 2));
+  const end = Math.min(clean.length, start + max);
+  return clipText(clean.slice(start, end), max);
+}
+
+function detectAdvancedMatchFieldV2(headers, bodyText, terms) {
+  const fields = [
+    ['Subject', headers.subject],
+    ['From', headers.from],
+    ['Reply-To', headers['reply-to']],
+    ['To', headers.to],
+    ['Body', bodyText]
+  ];
+
+  for (const [label, value] of fields) {
+    const haystack = String(value || '').toLowerCase();
+    if ((terms || []).some((term) => haystack.includes(String(term || '').toLowerCase()))) {
+      return label;
+    }
+  }
+
+  return 'Message';
+}
+
+function addAdvancedCandidateV2(candidates, email, source, priority, context) {
+  const valid = filterAdvancedHumanEmailsV2([email])[0];
+  if (!valid) return;
+
+  const existing = candidates.get(valid);
+  if (!existing || priority > existing.priority) {
+    candidates.set(valid, {
+      email: valid,
+      source,
+      priority,
+      context: clipText(context || '', 300)
+    });
+  }
+}
+
+function extractAdvancedSearchEmailCandidatesV2(message, headers = {}, matchedTerms = []) {
+  const candidates = new Map();
+  const { bodyText } = splitHeaderAndBody(message);
+  const decodedBody = stripHtmlForSearch(bodyText);
+
+  for (const email of emailsFromTextV2(headers['reply-to'])) {
+    addAdvancedCandidateV2(candidates, email, 'Reply-To', 100, headers['reply-to']);
+  }
+
+  for (const email of emailsFromTextV2(headers.from)) {
+    addAdvancedCandidateV2(candidates, email, 'From', 90, headers.from);
+  }
+
+  const labeledRegex = /(?:buyer|customer|client|contact|email|e-mail|reply\s*to|from)[^\n\r<>]{0,180}?([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/gi;
+  let labelMatch;
+
+  while ((labelMatch = labeledRegex.exec(decodedBody)) !== null) {
+    addAdvancedCandidateV2(candidates, labelMatch[1], 'Labeled body contact', 85, labelMatch[0]);
+  }
+
+  const mailtoRegex = /mailto:([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/gi;
+  let mailtoMatch;
+
+  while ((mailtoMatch = mailtoRegex.exec(message)) !== null) {
+    addAdvancedCandidateV2(candidates, mailtoMatch[1], 'Mailto link', 80, mailtoMatch[0]);
+  }
+
+  const lowerBody = decodedBody.toLowerCase();
+
+  for (const term of matchedTerms || []) {
+    const needle = String(term || '').toLowerCase();
+    if (!needle) continue;
+
+    let index = lowerBody.indexOf(needle);
+    let guard = 0;
+
+    while (index !== -1 && guard < 10) {
+      const start = Math.max(0, index - 360);
+      const end = Math.min(decodedBody.length, index + needle.length + 360);
+      const windowText = decodedBody.slice(start, end);
+
+      for (const email of emailsFromTextV2(windowText)) {
+        addAdvancedCandidateV2(candidates, email, `Near matched term: ${term}`, 70, windowText);
+      }
+
+      index = lowerBody.indexOf(needle, index + needle.length);
+      guard += 1;
+    }
+  }
+
+  for (const email of extractBuyerEmailsFromBody(decodedBody)) {
+    addAdvancedCandidateV2(candidates, email, 'Buyer/contact fallback', 55, advancedMatchSnippetV2(decodedBody, matchedTerms));
+  }
+
+  return Array.from(candidates.values())
+    .sort((a, b) => b.priority - a.priority)
+    .slice(0, MAX_ADVANCED_EMAILS_PER_MESSAGE);
+}
+
+function buildAdvancedSearchRowV2({
+  email,
+  messageIndex,
+  headers,
+  message,
+  fileName,
+  matchedTerms,
+  matchMode,
+  matchField,
+  matchSnippet,
+  candidateSource
+}) {
+  const sample = String(message || '').slice(0, MAX_MESSAGE_CHARS);
+  const matchedLabel = matchedTerms.length ? matchedTerms.join(' | ') : 'Advanced search match';
+
+  return {
+    'Customer Name': clipText(email ? nameFromEmail(email) : 'Advanced Search Match', 120),
+    'Customer Email': clipText(email || '', 160),
+    'Order ID': `MSG-${messageIndex}`,
+    'Order Date': clipText(headers.date || '', 120),
+    'Order Total': '',
+    'Marketing Consent': 'Unknown',
+    'Source Type': 'Advanced Full-Mailbox Search',
+    'Subject': clipText(headers.subject || '', 220),
+    'Raw Source File': clipText(fileName, 180),
+    'Etsy Link': clipText(extractEtsyLink(sample), 500),
+    'Etsy Recovery Status': clipText(`Matched terms: ${matchedLabel}; Email source: ${candidateSource || 'unknown'}`, 220),
+    'Review Status': clipText(`Advanced search match (${matchMode})`, 120),
+    'Matched Term': clipText(matchedLabel, 220),
+    'Match Field': clipText(matchField || 'Message', 80),
+    'Match Snippet': clipText(matchSnippet || '', 300),
+    'Message From': clipText(headers.from || '', 220),
+    'Reply-To': clipText(headers['reply-to'] || '', 220),
+    'Message Date': clipText(headers.date || '', 120)
+  };
+}
+
+
+function advancedSearchHaystack(message, headers = {}, bodyText = '') {
+  const fallbackBody = bodyText || splitHeaderAndBody(message).bodyText || '';
+
+  return stripHtmlForSearch([
+    headers.from,
+    headers.to,
+    headers.cc,
+    headers.bcc,
+    headers['reply-to'],
+    headers.sender,
+    headers.subject,
+    headers.date,
+    fallbackBody
+  ].filter(Boolean).join(' ')).toLowerCase();
+}
+
+
+function matchedAdvancedTerms(haystack, scanOptions) {
+  const text = String(haystack || '').toLowerCase();
+  const terms = scanOptions?.advancedSearch?.terms || [];
+
+  return terms.filter((term) => {
+    const normalized = String(term || '').trim().toLowerCase();
+    return normalized && text.includes(normalized);
+  });
+}
+
+
+function strictAdvancedContactMatchV2(candidate, headers = {}, matchedTerms = []) {
+  const terms = (matchedTerms || [])
+    .map((term) => String(term || '').trim().toLowerCase())
+    .filter(Boolean);
+
+  if (!terms.length) return true;
+
+  const candidateText = [
+    candidate.email,
+    nameFromEmail(candidate.email),
+    candidate.source,
+    candidate.context,
+    headers.from,
+    headers['reply-to']
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  return terms.some((term) => candidateText.includes(term));
+}
+
+function rowsFromAdvancedSearchMessage(message, messageIndex, fileName, scanOptions) {
+  const raw = String(message || '');
+  if (!raw.trim()) return [];
+
+  const sample = raw.slice(0, MAX_MESSAGE_CHARS);
+  const { bodyText } = splitHeaderAndBody(sample);
+  const headers = parseEmailHeaderBlock(sample);
+  const haystack = advancedSearchHaystack(sample, headers, bodyText);
+
+  if (!advancedMessageMatches(haystack, scanOptions)) {
+    return [];
+  }
+
+  const matchedTerms = matchedAdvancedTerms(haystack, scanOptions);
+  const matchField = detectAdvancedMatchFieldV2(headers, bodyText, matchedTerms);
+  const defaultSnippet = advancedMatchSnippetV2(sample, matchedTerms);
+  const candidates = extractAdvancedSearchEmailCandidatesV2(sample, headers, matchedTerms);
+  const strictCandidates = candidates.filter((candidate) =>
+    strictAdvancedContactMatchV2(candidate, headers, matchedTerms)
+  );
+
+  return strictCandidates.map((candidate) =>
+    buildAdvancedSearchRowV2({
+      email: candidate.email,
+      messageIndex,
+      headers,
+      message: sample,
+      fileName,
+      matchedTerms,
+      matchMode: scanOptions.advancedSearch.matchMode,
+      matchField,
+      matchSnippet: candidate.context || defaultSnippet,
+      candidateSource: candidate.source
+    })
+  );
+}
+
+
+async function streamMboxToRows(filePath, fileName, sizeBytes, sender, scanOptionsInput = {}) {
+  const scanOptions = normalizeScanOptions(scanOptionsInput);
+  const isAdvancedMailboxSearch = scanOptions.mode === 'advanced-mailbox';
+
+
+
   return new Promise((resolve, reject) => {
     const previewRows = [];
     const seenEmailKeys = new Set();
@@ -555,6 +996,7 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
     let activeMessage = '';
     let messageIndex = 0;
     let etsyMessageCount = 0;
+    let matchedMessageCount = 0;
     let truncatedMessageCount = 0;
     let recoveredRowCount = 0;
     let rowLimitHit = false;
@@ -569,7 +1011,9 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
 
     const outputPath = path.join(
       exportDir,
-      `${safeExportBaseName(fileName)}-${timestampForFileName()}-recovered-emails.csv`
+      isAdvancedMailboxSearch
+        ? `${safeExportBaseName(fileName)}-${timestampForFileName()}-advanced-search-matches.csv`
+        : `${safeExportBaseName(fileName)}-${timestampForFileName()}-recovered-emails.csv`
     );
 
     const outputStream = fs.createWriteStream(outputPath, { encoding: 'utf8' });
@@ -594,7 +1038,11 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
             previewRows: previewRows.length,
             outputPath,
             rowLimitHit,
-            readMethod: 'disk-backed-email-first-parser',
+            scanMode: scanOptions.mode,
+            searchTerms: scanOptions.advancedSearch.terms,
+            matchMode: scanOptions.advancedSearch.matchMode,
+            matchedMessages: matchedMessageCount,
+            readMethod: isAdvancedMailboxSearch ? 'disk-backed-advanced-full-mailbox-search' : 'disk-backed-email-first-parser',
             maxMessageChars: MAX_MESSAGE_CHARS,
             maxRecoveryRows: MAX_RECOVERY_ROWS
           }
@@ -680,6 +1128,10 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
         return;
       }
 
+      if (isAdvancedMailboxSearch && isAdvancedInfrastructureEmailV2(email)) {
+        return;
+      }
+
       if (seenEmailKeys.has(email)) {
         return;
       }
@@ -713,14 +1165,20 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
         ? `${activeMessage}\n\n[CRC note: message body truncated during scan because it exceeded the per-message safety limit.]`
         : activeMessage;
 
-      const extractedRows = rowsFromMboxMessage(message, messageIndex, fileName);
+      const extractedRows = isAdvancedMailboxSearch
+        ? rowsFromAdvancedSearchMessage(message, messageIndex, fileName, scanOptions)
+        : rowsFromMboxMessage(message, messageIndex, fileName);
 
       if (messageWasTruncated) {
         truncatedMessageCount += 1;
       }
 
       if (extractedRows.length) {
-        etsyMessageCount += 1;
+        if (isAdvancedMailboxSearch) {
+          matchedMessageCount += 1;
+        } else {
+          etsyMessageCount += 1;
+        }
 
         for (const row of extractedRows) {
           acceptRecoveredRow(row);
@@ -759,7 +1217,11 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
         outputPath,
         message: rowLimitHit
           ? `Recovered ${recoveredRowCount.toLocaleString()} unique email record(s). Safe target reached; writing export to disk.`
-          : `Scanning ${fileName}: ${percent}% complete, ${messageIndex.toLocaleString()} messages checked, ${recoveredRowCount.toLocaleString()} unique email records found.`
+          : isAdvancedMailboxSearch
+            ? `Advanced search: ${percent}% complete, ${messageIndex.toLocaleString()} messages checked, ${matchedMessageCount.toLocaleString()} matching message(s), ${recoveredRowCount.toLocaleString()} unique email records found.`
+            : isAdvancedMailboxSearch
+            ? `Advanced search: ${percent}% complete, ${messageIndex.toLocaleString()} messages checked, ${matchedMessageCount.toLocaleString()} matching message(s), ${recoveredRowCount.toLocaleString()} unique email records found.`
+            : `Scanning ${fileName}: ${percent}% complete, ${messageIndex.toLocaleString()} messages checked, ${recoveredRowCount.toLocaleString()} unique email records found.`
       });
 
       logImport('Scan progress', {
@@ -846,14 +1308,14 @@ async function streamMboxToRows(filePath, fileName, sizeBytes, sender) {
         finish({
           messagesScanned: messageIndex,
           etsyMessages: etsyMessageCount,
+          matchedMessages: matchedMessageCount,
           truncatedMessages: truncatedMessageCount
         });
       }
     });
   });
 }
-
-async function readSelectedMbox(filePath, sender) {
+async function readSelectedMbox(filePath, sender, scanOptionsInput = {}) {
   if (!filePath || typeof filePath !== 'string') {
     return importError('No file was selected.');
   }
@@ -901,11 +1363,15 @@ async function readSelectedMbox(filePath, sender) {
     });
   }
 
+  const scanOptions = normalizeScanOptions(scanOptionsInput);
+
   try {
     logImport('Streaming selected .mbox file', {
       fileName,
       size: formatBytes(stats.size),
-      path: filePath
+      path: filePath,
+      scanMode: scanOptions.mode,
+      searchTerms: scanOptions.advancedSearch.terms
     });
 
     emitImportProgress(sender, {
@@ -917,10 +1383,12 @@ async function readSelectedMbox(filePath, sender) {
       messageCount: 0,
       recoveredRows: 0,
       heapUsedMb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
-      message: `File selected: ${fileName} (${formatBytes(stats.size)}). Starting local scan now...`
+      message: scanOptions.mode === 'advanced-mailbox'
+        ? `File selected: ${fileName} (${formatBytes(stats.size)}). Starting advanced full-mailbox search...`
+        : `File selected: ${fileName} (${formatBytes(stats.size)}). Starting local scan now...`
     });
 
-    const streamed = await streamMboxToRows(filePath, fileName, stats.size, sender);
+    const streamed = await streamMboxToRows(filePath, fileName, stats.size, sender, scanOptions);
 
     logImport('Streaming import complete', {
       fileName,
@@ -1117,7 +1585,14 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
 
   await crcFsPromises.mkdir(resultsDir, { recursive: true });
 
-  const recoveredCsvName = crcSafeCsvName(recordCount);
+  const sourceBaseName = crcPath.basename(sourcePath).toLowerCase();
+  const isAdvancedResultsPackage =
+    String(payload.scanMode || '').toLowerCase() === 'advanced-mailbox' ||
+    sourceBaseName.includes('advanced-search-matches');
+
+  const recoveredCsvName = isAdvancedResultsPackage
+    ? `Advanced-Search-Matches-${recordCount}-records.csv`
+    : crcSafeCsvName(recordCount);
   const recoveredCsvPath = crcPath.join(resultsDir, recoveredCsvName);
   await crcFsPromises.copyFile(sourcePath, recoveredCsvPath);
 
@@ -1132,7 +1607,11 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
   const readme = [
     'Etsy Email Recovery Results',
     '',
-    `Recovered email records: ${recordCount.toLocaleString()}`,
+    isAdvancedResultsPackage
+      ? `Advanced search matches: ${recordCount.toLocaleString()}`
+      : isAdvancedResultsPackage
+      ? `Advanced search matches: ${recordCount.toLocaleString()}`
+      : `Recovered email records: ${recordCount.toLocaleString()}`,
     `Messages scanned: ${messagesScanned.toLocaleString()}`,
     `Preview rows shown in app: ${previewRows.toLocaleString()}`,
     '',
@@ -1141,7 +1620,11 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
     '',
     linkPreviewPath ? `Optional preview file:\n${crcPath.basename(linkPreviewPath)}\n` : '',
     'Notes:',
-    '- The recovered CSV is the complete recovered record set.',
+    isAdvancedResultsPackage
+      ? '- The advanced search CSV is the complete matched record set for the selected terms.'
+      : isAdvancedResultsPackage
+      ? '- The advanced search CSV is the complete matched record set for the selected terms.'
+      : '- The recovered CSV is the complete recovered record set.',
     '- The app may show only 500 preview rows for performance.',
     '- The Etsy Link Review Preview is a QA preview from visible preview rows, not a full-dataset count.',
     '- Marketing consent is not automatically confirmed by this recovery tool.',
@@ -1154,9 +1637,13 @@ ipcMain.handle('crc:prepare-results-package', async (_event, payload = {}) => {
 
   const auditPath = crcPath.join(resultsDir, 'Recovery-Audit-Summary.txt');
   const audit = [
-    'Recovery Audit Summary',
+    isAdvancedResultsPackage ? 'Advanced Search Audit Summary' : 'Recovery Audit Summary',
     '',
-    `Recovered records: ${recordCount.toLocaleString()}`,
+    isAdvancedResultsPackage
+      ? `Advanced search matches: ${recordCount.toLocaleString()}`
+      : isAdvancedResultsPackage
+      ? `Advanced search matches: ${recordCount.toLocaleString()}`
+      : `Recovered records: ${recordCount.toLocaleString()}`,
     `Messages scanned: ${messagesScanned.toLocaleString()}`,
     `Preview rows shown in app: ${previewRows.toLocaleString()}`,
     `Etsy link review preview records: ${linkPreviewCount.toLocaleString()}`,
@@ -1200,7 +1687,7 @@ ipcMain.handle('crc:reveal-path', async (_event, targetPath = '') => {
 });
 
 
-ipcMain.handle('crc:select-mbox-file', async (event) => {
+ipcMain.handle('crc:select-mbox-file', async (event, scanOptions = {}) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender);
 
     const result = await dialog.showOpenDialog(parentWindow, buildMboxOpenDialogOptions());
@@ -1213,10 +1700,10 @@ ipcMain.handle('crc:select-mbox-file', async (event) => {
       };
     }
 
-    return readSelectedMbox(result.filePaths[0], event.sender);
+    return readSelectedMbox(result.filePaths[0], event.sender, scanOptions);
   });
 
-  ipcMain.on('crc:start-mbox-import', async (event) => {
+  ipcMain.on('crc:start-mbox-import', async (event, scanOptions = {}) => {
     const sender = event.sender;
     const parentWindow = BrowserWindow.fromWebContents(sender);
 
@@ -1226,7 +1713,9 @@ ipcMain.handle('crc:select-mbox-file', async (event) => {
         percent: 0,
         messageCount: 0,
         recoveredRows: 0,
-        message: 'Waiting for you to choose a Gmail Takeout .mbox file...'
+        message: normalizeScanOptions(scanOptions).mode === 'advanced-mailbox'
+          ? 'Waiting for you to choose a Gmail Takeout .mbox file for advanced full-mailbox search...'
+          : 'Waiting for you to choose a Gmail Takeout .mbox file...'
       });
 
       const result = await dialog.showOpenDialog(parentWindow, buildMboxOpenDialogOptions());
@@ -1250,7 +1739,7 @@ ipcMain.handle('crc:select-mbox-file', async (event) => {
         message: `File selected: ${path.basename(filePath)}. Starting local scan now...`
       });
 
-      const importResult = await readSelectedMbox(filePath, sender);
+      const importResult = await readSelectedMbox(filePath, sender, scanOptions);
       sender.send('crc:mbox-import-complete', importResult);
     } catch (error) {
       sender.send('crc:mbox-import-complete', {

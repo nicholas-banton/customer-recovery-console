@@ -1016,3 +1016,113 @@ button {
     opacity: 1;
   }
 }
+
+/* v1.4 Full-Mailbox Advanced Search */
+.scan-mode-panel {
+  border: 1px solid rgba(96, 165, 250, 0.24);
+  background: rgba(15, 23, 42, 0.58);
+  border-radius: 18px;
+  padding: 18px;
+  margin-bottom: 18px;
+}
+
+.scan-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.scan-mode-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 12px;
+  align-items: start;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(30, 41, 59, 0.64);
+  border-radius: 16px;
+  padding: 14px;
+  cursor: pointer;
+}
+
+.scan-mode-card input {
+  margin-top: 3px;
+}
+
+.scan-mode-card strong {
+  display: block;
+  color: #e2e8f0;
+}
+
+.scan-mode-card span {
+  grid-column: 2;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+.scan-mode-card.active {
+  border-color: rgba(96, 165, 250, 0.9);
+  background: rgba(30, 64, 175, 0.35);
+}
+
+.advanced-mailbox-search {
+  margin-top: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.advanced-mailbox-search label {
+  display: grid;
+  gap: 6px;
+}
+
+.advanced-mailbox-search label span,
+.search-chip-section > span {
+  color: #bfdbfe;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.advanced-mailbox-search input,
+.advanced-mailbox-search select {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.88);
+  color: #e5e7eb;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.search-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.search-chip {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(51, 65, 85, 0.72);
+  color: #e2e8f0;
+  border-radius: 999px;
+  padding: 8px 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.search-chip.active {
+  border-color: rgba(96, 165, 250, 0.95);
+  background: rgba(37, 99, 235, 0.9);
+  color: white;
+}
+
+.advanced-search-note {
+  color: #cbd5e1;
+  margin: 0;
+  line-height: 1.45;
+}
+
+@media (max-width: 800px) {
+  .scan-mode-grid {
+    grid-template-columns: 1fr;
+  }
+}

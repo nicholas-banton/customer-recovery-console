@@ -559,6 +559,10 @@ function App() {
   });
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [scanMode, setScanMode] = useState('standard-etsy');
+  const [advancedSearchInput, setAdvancedSearchInput] = useState('');
+  const [advancedSelectedTerms, setAdvancedSelectedTerms] = useState([]);
+  const [advancedMatchMode, setAdvancedMatchMode] = useState('any');
   const [isDragging, setIsDragging] = useState(false);
   const [lastMessage, setLastMessage] = useState('Ready to import a Gmail Takeout .mbox or authorized Etsy customer file.');
   const [importProgress, setImportProgress] = useState(null);
@@ -623,6 +627,58 @@ function App() {
     setActiveTab('home');
   }
 
+  const advancedSearchSuggestions = [
+    'law',
+    'legal',
+    'attorney',
+    'refund',
+    'shipping',
+    'tracking',
+    'invoice',
+    'payment',
+    'order',
+    'customer',
+    'gmail',
+    'yahoo'
+  ];
+
+  function parseAdvancedSearchTerms(value) {
+    return String(value || '')
+      .split(',')
+      .map((term) => term.trim())
+      .filter(Boolean);
+  }
+
+  function uniqueTerms(terms) {
+    return Array.from(new Set(terms.map((term) => term.trim()).filter(Boolean)));
+  }
+
+  const advancedSearchTerms = uniqueTerms([
+    ...parseAdvancedSearchTerms(advancedSearchInput),
+    ...advancedSelectedTerms
+  ]);
+
+  function toggleAdvancedSearchTerm(term) {
+    setAdvancedSelectedTerms((prev) => {
+      if (prev.includes(term)) {
+        return prev.filter((item) => item !== term);
+      }
+      return [...prev, term];
+    });
+  }
+
+  function buildScanOptions() {
+    return {
+      scanMode,
+      advancedSearch: {
+        terms: advancedSearchTerms,
+        matchMode: advancedMatchMode,
+        includeHeaders: true,
+        includeBody: true
+      }
+    };
+  }
+
   const stats = useMemo(() => {
     const totalSpend = customers.reduce((sum, c) => sum + c.totalSpend, 0);
     const latestDesktopImport = [...importHistory].reverse().find((entry) => entry.exportPath) || null;
@@ -639,6 +695,7 @@ function App() {
       latestReadmePath: latestDesktopImport?.readmePath || '',
       latestAuditPath: latestDesktopImport?.auditPath || '',
       latestLinkPreviewPath: latestDesktopImport?.linkPreviewPath || '',
+      latestScanMode: latestDesktopImport?.scanMode || 'standard-etsy',
       hasFullDesktopExport,
       marketing: customers.filter((c) => c.status === 'Marketing Eligible').length,
       review: customers.filter((c) => c.status === 'Needs Review').length,
@@ -722,13 +779,19 @@ function App() {
       const rows = Array.isArray(result.rows)
         ? result.rows
         : mboxToRows(result.text || '', result.fileName);
+
       const totalRecoveredRows = result.stats?.recoveredRows ?? rows.length;
       const previewRows = result.stats?.previewRows ?? rows.length;
       const rawExportPath = result.exportPath || result.stats?.outputPath || '';
+
       const { customers: imported } = buildCustomers(rows, result.fileName);
 
       const etsyLinkPreviewRows = imported.filter((customer) => customer.isEtsySale && customer.etsyLinks);
       const etsyLinkPreviewCsv = customersToCsv(etsyLinkPreviewRows);
+
+      const activeScanMode = result.stats?.scanMode || (typeof scanMode !== 'undefined' ? scanMode : 'standard-etsy');
+      const activeSearchTerms = result.stats?.searchTerms || (typeof advancedSearchTerms !== 'undefined' ? advancedSearchTerms : []);
+      const activeMatchMode = result.stats?.matchMode || (typeof advancedMatchMode !== 'undefined' ? advancedMatchMode : 'any');
 
       let exportPath = rawExportPath;
       let resultsDir = '';
@@ -749,7 +812,10 @@ function App() {
             previewRows,
             linkPreviewCsv: etsyLinkPreviewCsv,
             linkPreviewCount: etsyLinkPreviewRows.length,
-            fileName: result.fileName
+            fileName: result.fileName,
+            scanMode: activeScanMode,
+            searchTerms: activeSearchTerms,
+            matchMode: activeMatchMode
           });
 
           if (packageResult?.ok) {
@@ -759,7 +825,7 @@ function App() {
             auditPath = packageResult.auditPath || '';
             linkPreviewPath = packageResult.linkPreviewPath || '';
 
-            if (typeof window.crcApp.openResultsFolder === 'function') {
+            if (typeof window.crcApp.openResultsFolder === 'function' && resultsDir) {
               window.crcApp.openResultsFolder(resultsDir);
             }
           } else if (packageResult?.canceled) {
@@ -773,6 +839,7 @@ function App() {
       setCustomers(imported);
       setQuery('');
       setStatusFilter('All');
+
       setImportHistory((prev) => [
         ...prev,
         {
@@ -785,13 +852,27 @@ function App() {
           resultsDir,
           readmePath,
           auditPath,
-          linkPreviewPath
+          linkPreviewPath,
+          scanMode: activeScanMode,
+          searchTerms: activeSearchTerms,
+          matchMode: activeMatchMode
         }
       ]);
 
       setImportProgress(null);
-      setLastMessage(`Import complete: ${result.fileName}. Saved ${totalRecoveredRows.toLocaleString()} recovered record(s). Loaded ${imported.length.toLocaleString()} records into Review preview. Results folder: ${resultsDir || 'selected save location'}. Main CSV: ${exportPath || 'saved locally'}.`);
-      setStatusFilter('Email Found');
+
+      const modeLabel = activeScanMode === 'advanced-mailbox'
+        ? 'Advanced search complete'
+        : 'Import complete';
+
+      const resultCountLabel = activeScanMode === 'advanced-mailbox'
+        ? 'advanced search match(es)'
+        : 'recovered record(s)';
+
+      setLastMessage(
+        `${modeLabel}: ${result.fileName}. Saved ${totalRecoveredRows.toLocaleString()} ${resultCountLabel}. Loaded ${imported.length.toLocaleString()} record(s) into Review preview. Results folder: ${resultsDir || 'selected save location'}. Main CSV: ${exportPath || 'saved locally'}.`
+      );
+
       setActiveTab('review');
     } catch (error) {
       setImportProgress(null);
@@ -800,6 +881,14 @@ function App() {
   }
 
   async function handleDesktopMboxImport() {
+    if (scanMode === 'advanced-mailbox' && advancedSearchTerms.length === 0) {
+      setLastMessage('Enter at least one Advanced Search term before running a full-mailbox search.');
+      setActiveTab('import');
+      return;
+    }
+
+    const scanOptions = buildScanOptions();
+
     if (!hasDesktopMboxPicker()) {
       setLastMessage('Desktop .mbox importer is not available in this runtime. Use CSV, XLSX, or the web fallback instead.');
       return;
@@ -811,10 +900,14 @@ function App() {
         percent: 0,
         messageCount: 0,
         recoveredRows: 0,
-        message: 'Waiting for you to choose a Gmail Takeout .mbox file...'
+        message: scanMode === 'advanced-mailbox'
+          ? 'Waiting for you to choose a Gmail Takeout .mbox file for advanced full-mailbox search...'
+          : 'Waiting for you to choose a Gmail Takeout .mbox file...'
       });
-      setLastMessage('Choose the Gmail Takeout .mbox file from your computer. The file will be read locally only.');
-      window.crcApp.startMboxImport();
+      setLastMessage(scanMode === 'advanced-mailbox'
+        ? `Choose the Gmail Takeout .mbox file. Advanced search will scan all messages for: ${advancedSearchTerms.join(', ')}.`
+        : 'Choose the Gmail Takeout .mbox file from your computer. The file will be read locally only.');
+      window.crcApp.startMboxImport(scanOptions);
       return;
     }
 
@@ -828,7 +921,7 @@ function App() {
       });
       setLastMessage('Choose the Gmail Takeout .mbox file from your computer. The file will be read locally only.');
 
-      const result = await window.crcApp.selectMboxFile();
+      const result = await window.crcApp.selectMboxFile(scanOptions);
       handleDesktopMboxImportComplete(result);
     } catch (error) {
       setImportProgress(null);
@@ -1047,7 +1140,7 @@ function App() {
       <main className="main-content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Version 1.0 Client Recovery Build</p>
+            <p className="eyebrow">Version 1.4 Full-Mailbox Advanced Search Build</p>
             <h2>{activeTab === 'home' ? 'Dashboard' : activeTab === 'import' ? 'Import Mailbox' : activeTab === 'review' ? 'Review Records' : 'Export Files'}</h2>
           </div>
           <div className="status-stack">
@@ -1109,14 +1202,89 @@ function App() {
           <section className="content-card">
             <div className="section-heading">
               <h3>Import Mailbox</h3>
-              <p>Choose the Gmail Takeout .mbox file from your computer. The tool scans Etsy sale emails, extracts buyer emails when present, and captures Etsy links for review.</p>
+              <p>Choose Standard Etsy Recovery or Advanced Full-Mailbox Search before selecting the Gmail Takeout .mbox file.</p>
+            </div>
+
+            <div className="scan-mode-panel">
+              <div className="scan-mode-grid">
+                <label className={scanMode === 'standard-etsy' ? 'scan-mode-card active' : 'scan-mode-card'}>
+                  <input
+                    type="radio"
+                    name="scanMode"
+                    value="standard-etsy"
+                    checked={scanMode === 'standard-etsy'}
+                    onChange={() => setScanMode('standard-etsy')}
+                  />
+                  <strong>Standard Etsy Recovery</strong>
+                  <span>Finds Etsy buyer/customer emails using the proven recovery logic.</span>
+                </label>
+
+                <label className={scanMode === 'advanced-mailbox' ? 'scan-mode-card active' : 'scan-mode-card'}>
+                  <input
+                    type="radio"
+                    name="scanMode"
+                    value="advanced-mailbox"
+                    checked={scanMode === 'advanced-mailbox'}
+                    onChange={() => setScanMode('advanced-mailbox')}
+                  />
+                  <strong>Advanced Full-Mailbox Search</strong>
+                  <span>Scans all mailbox messages for your selected terms, not only Etsy messages.</span>
+                </label>
+              </div>
+
+              {scanMode === 'advanced-mailbox' && (
+                <div className="advanced-mailbox-search">
+                  <label>
+                    <span>Search terms before scan</span>
+                    <input
+                      value={advancedSearchInput}
+                      onChange={(event) => setAdvancedSearchInput(event.target.value)}
+                      placeholder="Example: law, legal, attorney, refund, shipping"
+                    />
+                  </label>
+
+                  <label>
+                    <span>Match mode</span>
+                    <select value={advancedMatchMode} onChange={(event) => setAdvancedMatchMode(event.target.value)}>
+                      <option value="any">Any selected term</option>
+                      <option value="all">All selected terms</option>
+                      <option value="exact">Exact phrase / selected phrase</option>
+                    </select>
+                  </label>
+
+                  <div className="search-chip-section">
+                    <span>Suggested terms</span>
+                    <div className="search-chips">
+                      {advancedSearchSuggestions.map((term) => (
+                        <button
+                          key={term}
+                          type="button"
+                          className={advancedSelectedTerms.includes(term) ? 'search-chip active' : 'search-chip'}
+                          onClick={() => toggleAdvancedSearchTerm(term)}
+                        >
+                          {term}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <p className="advanced-search-note">
+                    Full CSV export is uncapped. The Review portal only shows a safe preview for performance.
+                    Active terms: {advancedSearchTerms.length ? advancedSearchTerms.join(', ') : 'none selected yet'}.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="import-actions">
               <button className="primary" type="button" onClick={handleDesktopMboxImport}>
-                Choose .mbox file
+                {scanMode === 'advanced-mailbox' ? 'Choose .mbox and Run Advanced Search' : 'Choose .mbox and Run Etsy Recovery'}
               </button>
-              <p>Recommended for Gmail Takeout .mbox files. This uses the desktop-safe local importer instead of the browser file reader.</p>
+              <p>
+                {scanMode === 'advanced-mailbox'
+                  ? 'Advanced Search scans all mailbox messages for your terms and exports every matching email record found.'
+                  : 'Standard Recovery scans Etsy sale emails, extracts buyer emails, and creates a client-ready results folder.'}
+              </p>
               {importProgress && (
                 <div className="import-progress">
                   <div className="progress-header">
@@ -1177,8 +1345,10 @@ function App() {
           <section className="content-card full-height">
             <div className="section-heading split">
               <div>
-                <h3>Review recovery queues</h3>
-                <p>Confirm recovered buyer emails, inspect Etsy links, and mark records before export.</p>
+                <h3>{stats.latestScanMode === 'advanced-mailbox' ? 'Review advanced search matches' : 'Review recovery queues'}</h3>
+                <p>{stats.latestScanMode === 'advanced-mailbox'
+                  ? 'Confirm advanced search matches, inspect source context, and mark records before client handoff.'
+                  : 'Confirm recovered buyer emails, inspect Etsy links, and mark records before export.'}</p>
               </div>
               <div className="review-controls">
                 <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search customers..." />
